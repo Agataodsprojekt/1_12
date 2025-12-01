@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ifc-common"
+version = "1.0.0"
+description = "Common utilities for IFC Construction Calculator microservices"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+]
+

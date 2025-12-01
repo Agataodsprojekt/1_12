@@ -1,0 +1,48 @@
+{
+  "welding": {
+    "price_per_meter": 25.00,
+    "price_per_operation": 50.00,
+    "description": "Koszt spawania na metr/operację"
+  },
+  "bolts": {
+    "M12": {
+      "price_per_unit": 2.50,
+      "description": "Śruba M12"
+    },
+    "M16": {
+      "price_per_unit": 3.50,
+      "description": "Śruba M16"
+    },
+    "M20": {
+      "price_per_unit": 5.00,
+      "description": "Śruba M20"
+    },
+    "M24": {
+      "price_per_unit": 7.50,
+      "description": "Śruba M24"
+    },
+    "default": {
+      "price_per_unit": 2.50,
+      "description": "Domyślna śruba"
+    }
+  },
+  "connection_types": {
+    "rigid_frame": {
+      "price": 150.00,
+      "description": "Złącze sztywne"
+    },
+    "hinged": {
+      "price": 80.00,
+      "description": "Złącze przegubowe"
+    },
+    "welded_connection": {
+      "price": 200.00,
+      "description": "Połączenie spawane"
+    },
+    "bolted_connection": {
+      "price": 120.00,
+      "description": "Połączenie śrubowe"
+    }
+  }
+}
+

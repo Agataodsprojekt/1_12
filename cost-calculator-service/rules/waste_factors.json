@@ -1,0 +1,9 @@
+{
+  "STEEL/S355": 0.05,
+  "STEEL/S235": 0.05,
+  "STEEL/S460": 0.05,
+  "CONCRETE/C30": 0.10,
+  "CONCRETE/C25": 0.10,
+  "default": 0.05
+}
+

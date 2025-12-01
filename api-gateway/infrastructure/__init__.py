@@ -1,0 +1,2 @@
+# Infrastructure layer - API Gateway
+

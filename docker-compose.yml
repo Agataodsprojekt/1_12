@@ -1,0 +1,159 @@
+# version: '3.8'  # Deprecated in newer Docker Compose versions
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ifc_construction_db
+      POSTGRES_USER: ifc_user
+      POSTGRES_PASSWORD: ifc_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ifc_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+      - IFC_PARSER_URL=http://ifc-parser-service:5001
+      - CALCULATION_ENGINE_URL=http://calculation-engine-service:5002
+      - COST_CALCULATOR_URL=http://cost-calculator-service:5003
+      - 3D_DATA_URL=http://3d-data-service:5004
+      - DB_MANAGER_URL=http://database-manager-service:5005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ifc-parser-service:
+        condition: service_started
+      calculation-engine-service:
+        condition: service_started
+      cost-calculator-service:
+        condition: service_started
+      3d-data-service:
+        condition: service_started
+      database-manager-service:
+        condition: service_started
+    volumes:
+      - ./api-gateway:/app
+      - ./common-package:/app/common-package
+
+  # IFC Parser Service
+  ifc-parser-service:
+    build:
+      context: .
+      dockerfile: ifc-parser-service/Dockerfile
+    ports:
+      - "5001:5001"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./ifc-parser-service:/app
+      - ./common-package:/app/common-package
+      - ifc_files:/app/uploads
+
+  # Calculation Engine Service
+  calculation-engine-service:
+    build:
+      context: .
+      dockerfile: calculation-engine-service/Dockerfile
+    ports:
+      - "5002:5002"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./calculation-engine-service:/app
+      - ./common-package:/app/common-package
+
+  # Cost Calculator Service
+  cost-calculator-service:
+    build:
+      context: .
+      dockerfile: cost-calculator-service/Dockerfile
+    ports:
+      - "5003:5003"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./cost-calculator-service:/app
+      - ./common-package:/app/common-package
+
+  # 3D Data Service
+  3d-data-service:
+    build:
+      context: .
+      dockerfile: 3d-data-service/Dockerfile
+    ports:
+      - "5004:5004"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./3d-data-service:/app
+      - ./common-package:/app/common-package
+
+  # Database Manager Service
+  database-manager-service:
+    build:
+      context: .
+      dockerfile: database-manager-service/Dockerfile
+    ports:
+      - "5005:5005"
+    environment:
+      - DATABASE_URL=postgresql://ifc_user:ifc_password@postgres:5432/ifc_construction_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./database-manager-service:/app
+      - ./common-package:/app/common-package
+
+  # Frontend Client (React) - OSOBNY SERWIS/KLIENT
+  # ⚠️ To NIE jest część Clean Architecture backendu!
+  # Presentation layer w mikroserwisach = FastAPI endpoints (backend API)
+  # Frontend React = Osobna aplikacja kliencka komunikująca się przez HTTP
+  # 
+  # UWAGA: Jeśli uruchamiasz frontend lokalnie (npm run dev), możesz zakomentować ten serwis
+  # i użyć zmiennej środowiskowej VITE_API_URL=http://localhost:8000
+  frontend-client:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      # Używamy localhost, bo frontend działa w przeglądarce użytkownika,
+      # która łączy się z API Gateway na hoście (nie w kontenerze)
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - api-gateway
+
+volumes:
+  postgres_data:
+  ifc_files:
+

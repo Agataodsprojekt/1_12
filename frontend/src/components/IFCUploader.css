@@ -1,0 +1,109 @@
+.ifc-uploader {
+  padding: 1rem;
+  background: #2a2a2a;
+  border-radius: 8px;
+  border: 1px solid #3a3a3a;
+}
+
+.ifc-uploader h2 {
+  margin-bottom: 1rem;
+  color: #fff;
+  font-size: 1.2rem;
+}
+
+.file-input-container {
+  position: relative;
+  margin-bottom: 1rem;
+}
+
+.file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.file-input-label {
+  display: block;
+  padding: 0.75rem 1rem;
+  background: #3a3a3a;
+  border: 2px dashed #5a5a5a;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  color: #aaa;
+  transition: all 0.3s;
+}
+
+.file-input-label:hover {
+  background: #4a4a4a;
+  border-color: #6bb8ff;
+  color: #6bb8ff;
+}
+
+.file-info {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  background: #333;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.file-info p {
+  margin-bottom: 0.25rem;
+  color: #ccc;
+}
+
+.button-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.btn {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.3s;
+  font-weight: 500;
+}
+
+.btn-primary {
+  background: #6bb8ff;
+  color: #000;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #8bcfff;
+}
+
+.btn-primary:disabled {
+  background: #4a4a4a;
+  color: #666;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: #5a5a5a;
+  color: #fff;
+}
+
+.btn-secondary:hover {
+  background: #6a6a6a;
+}
+
+.upload-status {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: #2a4a2a;
+  border: 1px solid #3a6a3a;
+  border-radius: 4px;
+  color: #6bff6b;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
