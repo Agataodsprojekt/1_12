@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Eye, Trash2, Layers, GripVertical, Building2, ArrowUpDown, Plus, Scissors } from 'lucide-react';
 import { Button } from './ui/button';
-import { ViewsManager, View } from '../utils/viewsFeature';
+import { ViewsManager, View } from '../utils/views';
 
 // Component for section plane slider
 interface SectionPlaneSliderProps {

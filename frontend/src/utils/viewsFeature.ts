@@ -526,6 +526,7 @@ export class ViewsManager {
       const normalizedNormal = normal.clone().normalize();
       
       // For scissors tool, use the midpoint between the two cutting points
+      // This ensures the plane passes through the line drawn by the user
       // For other views, use the provided point
       let helperPosition = point;
       if (view && (view as any).fromScissors) {
@@ -534,6 +535,7 @@ export class ViewsManager {
         
         if (scissorsPoint1 && scissorsPoint2) {
           // Calculate midpoint between the two cutting points
+          // This is the point where the plane should pass through (on the line)
           const point1 = scissorsPoint1 instanceof THREE.Vector3 
             ? scissorsPoint1 
             : new THREE.Vector3(scissorsPoint1.x, scissorsPoint1.y, scissorsPoint1.z);
@@ -541,30 +543,50 @@ export class ViewsManager {
             ? scissorsPoint2 
             : new THREE.Vector3(scissorsPoint2.x, scissorsPoint2.y, scissorsPoint2.z);
           
+          // Use midpoint - this is where the plane should be positioned
+          // The plane will pass through both point1 and point2 because:
+          // 1. The plane normal is perpendicular to the line direction
+          // 2. The plane passes through midpoint
+          // 3. Both points are equidistant from midpoint along the line
           helperPosition = new THREE.Vector3().addVectors(point1, point2).multiplyScalar(0.5);
-          console.log(`   📍 Using midpoint for scissors helper position:`);
-          console.log(`      Point1: (${point1.x.toFixed(2)}, ${point1.y.toFixed(2)}, ${point1.z.toFixed(2)})`);
-          console.log(`      Point2: (${point2.x.toFixed(2)}, ${point2.y.toFixed(2)}, ${point2.z.toFixed(2)})`);
-          console.log(`      Midpoint: (${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+          
+          console.log(`   📍 Positioning helper at midpoint of user's line:`);
+          console.log(`      User point1: (${point1.x.toFixed(2)}, ${point1.y.toFixed(2)}, ${point1.z.toFixed(2)})`);
+          console.log(`      User point2: (${point2.x.toFixed(2)}, ${point2.y.toFixed(2)}, ${point2.z.toFixed(2)})`);
+          console.log(`      Helper position (midpoint): (${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+          
+          // Verify that both points are in the plane (distance should be ~0)
+          const dist1 = Math.abs(normalizedNormal.dot(new THREE.Vector3().subVectors(point1, helperPosition)));
+          const dist2 = Math.abs(normalizedNormal.dot(new THREE.Vector3().subVectors(point2, helperPosition)));
+          console.log(`      Verification - point1 distance from plane: ${dist1.toFixed(4)}, point2: ${dist2.toFixed(4)}`);
+          if (dist1 > 0.01 || dist2 > 0.01) {
+            console.warn(`      ⚠️ Warning: Points may not be exactly in the plane!`);
+          } else {
+            console.log(`      ✅ Both points are in the plane`);
+          }
         } else {
           console.log(`   ⚠️ Scissors points not found, using provided point`);
         }
       }
       
-      // CRITICAL FIX: Calculate plane constant based on the desired position
-      // Instead of using plane.constant = 0 and positioning helper, we calculate
-      // the plane constant so the plane passes through helperPosition when helper is at (0,0,0)
-      // OR we position helper at helperPosition and use plane.constant = 0
-      // Let's try the second approach but ensure position is set correctly
+      // CRITICAL FIX: Calculate plane constant so the plane passes through helperPosition
+      // For PlaneHelper: plane constant defines where the plane passes through in world space
+      // We calculate it so the plane passes through helperPosition (midpoint of user's line for scissors)
       const planeConstant = -helperPosition.dot(normalizedNormal);
       const plane = new THREE.Plane(normalizedNormal, planeConstant);
       
-      console.log(`   🔵 Plane constant calculated: ${planeConstant.toFixed(4)} (for position: ${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+      if (view && (view as any).fromScissors) {
+        console.log(`   🔵 Scissors tool: Plane constant calculated so plane passes through midpoint of user's line`);
+        console.log(`      Helper position (midpoint): (${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+        console.log(`      Plane constant: ${planeConstant.toFixed(4)}`);
+      } else {
+        console.log(`   🔵 Plane constant calculated: ${planeConstant.toFixed(4)} (for position: ${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+      }
       
       // DEBUG: Log exact values being passed to PlaneHelper
       console.log(`   🔵 Creating PlaneHelper with:`);
       console.log(`      - plane.normal: (${normalizedNormal.x.toFixed(4)}, ${normalizedNormal.y.toFixed(4)}, ${normalizedNormal.z.toFixed(4)})`);
-      console.log(`      - plane.constant: 0`);
+      console.log(`      - plane.constant: ${planeConstant.toFixed(4)}`);
       console.log(`      - size parameter: ${planeSize.toFixed(4)}`);
       console.log(`      - color: 0x00ff00 (green)`);
       console.log(`   🔵 This should create a square plane with side length = ${planeSize.toFixed(4)}`);
@@ -637,8 +659,8 @@ export class ViewsManager {
         console.log(`   ⚠️ Error accessing helper geometry:`, e);
       }
       
-      // Position the helper at the calculated position
-      helper.position.copy(helperPosition);
+      // Position the helper at origin - plane position is controlled by plane.constant
+      helper.position.set(0, 0, 0);
       
       // Ensure helper scale is 1,1,1 (no scaling that could affect visual size)
       helper.scale.set(1, 1, 1);
@@ -663,7 +685,8 @@ export class ViewsManager {
       
       helper.quaternion.copy(quaternion);
       
-      console.log(`   Helper positioned at: (${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
+      console.log(`   Helper positioned at origin (0,0,0) - plane position controlled by plane.constant`);
+      console.log(`   Plane constant: ${planeConstant.toFixed(4)} (plane passes through: ${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)})`);
       console.log(`   Helper normal: (${normalizedNormal.x.toFixed(3)}, ${normalizedNormal.y.toFixed(3)}, ${normalizedNormal.z.toFixed(3)})`);
       console.log(`   Helper quaternion: (${quaternion.x.toFixed(3)}, ${quaternion.y.toFixed(3)}, ${quaternion.z.toFixed(3)}, ${quaternion.w.toFixed(3)})`);
       console.log(`   Helper scale: (${helper.scale.x.toFixed(3)}, ${helper.scale.y.toFixed(3)}, ${helper.scale.z.toFixed(3)})`);
@@ -692,16 +715,17 @@ export class ViewsManager {
       // Add helper to scene
       this.scene.add(helper);
       
-      // CRITICAL: PlaneHelper may auto-scale after adding to scene
-      // Force position and scale AFTER adding to scene
-      helper.position.copy(helperPosition);
+      // CRITICAL: PlaneHelper position is controlled by plane.constant, NOT helper.position
+      // Keep helper at origin (0,0,0) - plane position is already set via plane.constant
+      // Only ensure scale is correct
+      helper.position.set(0, 0, 0);
       helper.scale.set(1, 1, 1);
       
       // Update matrix world after adding to scene
       helper.updateMatrixWorld();
       
       // Force position and scale again after matrix update (PlaneHelper may reset them)
-      helper.position.copy(helperPosition);
+      helper.position.set(0, 0, 0);
       helper.scale.set(1, 1, 1);
       helper.updateMatrixWorld(true);
       
@@ -709,7 +733,8 @@ export class ViewsManager {
       console.log(`   ===== FINAL VERIFICATION AFTER ADDING TO SCENE =====`);
       console.log(`   📍 Position:`);
       console.log(`      helper.position: (${helper.position.x.toFixed(4)}, ${helper.position.y.toFixed(4)}, ${helper.position.z.toFixed(4)})`);
-      console.log(`      Expected: (${helperPosition.x.toFixed(4)}, ${helperPosition.y.toFixed(4)}, ${helperPosition.z.toFixed(4)})`);
+      console.log(`      Expected: (0, 0, 0) - plane position controlled by plane.constant`);
+      console.log(`      Plane passes through: (${helperPosition.x.toFixed(4)}, ${helperPosition.y.toFixed(4)}, ${helperPosition.z.toFixed(4)})`);
       console.log(`      helper.matrixWorld translation: (${helper.matrixWorld.elements[12].toFixed(4)}, ${helper.matrixWorld.elements[13].toFixed(4)}, ${helper.matrixWorld.elements[14].toFixed(4)})`);
       
       console.log(`   📏 Scale:`);
@@ -723,18 +748,42 @@ export class ViewsManager {
         console.log(`      ✅ Scale forced to: (${helper.scale.x.toFixed(4)}, ${helper.scale.y.toFixed(4)}, ${helper.scale.z.toFixed(4)})`);
       }
       
-      // Check mesh scale again
+      // Check mesh scale again and force helper scale to 1,1,1 if it was changed
       try {
         const mesh = (helper as any).planeMesh || (helper as any).mesh || (helper.children?.[0]);
         if (mesh) {
           console.log(`      mesh.scale: (${mesh.scale.x.toFixed(4)}, ${mesh.scale.y.toFixed(4)}, ${mesh.scale.z.toFixed(4)})`);
+          
+          // CRITICAL FIX: If helper.scale is not 1,1,1, we need to compensate in geometry size
+          // PlaneHelper may internally scale the helper, so we need to account for that
+          if (Math.abs(helper.scale.x - 1) > 0.001 || Math.abs(helper.scale.y - 1) > 0.001) {
+            console.log(`      ⚠️ Helper scale is not 1,1,1: (${helper.scale.x.toFixed(4)}, ${helper.scale.y.toFixed(4)}, ${helper.scale.z.toFixed(4)})`);
+            console.log(`      🔧 Adjusting geometry size to compensate for helper scale`);
+            
+            // Calculate required geometry size to get desired visual size
+            const requiredWidth = planeSize / helper.scale.x;
+            const requiredHeight = planeSize / helper.scale.y;
+            
+            if (mesh.geometry) {
+              const oldGeo = mesh.geometry as THREE.PlaneGeometry;
+              oldGeo.dispose();
+              
+              // Create new geometry with adjusted size
+              const adjustedGeometry = new THREE.PlaneGeometry(requiredWidth, requiredHeight);
+              mesh.geometry = adjustedGeometry;
+              
+              console.log(`      ✅ Geometry adjusted to: ${requiredWidth.toFixed(4)} x ${requiredHeight.toFixed(4)}`);
+              console.log(`      📐 Expected visual size: ${(requiredWidth * helper.scale.x).toFixed(4)} x ${(requiredHeight * helper.scale.y).toFixed(4)}`);
+            }
+          }
+          
           if (mesh.geometry) {
             const geo = mesh.geometry as THREE.PlaneGeometry;
             const geoWidth = geo.parameters?.width || (geo as any).width || 'unknown';
             const geoHeight = geo.parameters?.height || (geo as any).height || 'unknown';
             console.log(`      mesh.geometry size: ${geoWidth} x ${geoHeight}`);
             
-            // Calculate final visual size
+            // Calculate final visual size (geometry * mesh.scale * helper.scale)
             if (typeof geoWidth === 'number' && typeof geoHeight === 'number') {
               const finalWidth = geoWidth * mesh.scale.x * helper.scale.x;
               const finalHeight = geoHeight * mesh.scale.y * helper.scale.y;
@@ -757,7 +806,7 @@ export class ViewsManager {
       this.sectionHelpers.set(viewId, helper);
       
       console.log(`✅ Created section helper for view: ${viewId}, visible: ${isVisible}, size: ${planeSize}`);
-      console.log(`   Plane constant: 0 (plane passes through helper origin), helperPosition: (${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)}), normal: (${normalizedNormal.x.toFixed(3)}, ${normalizedNormal.y.toFixed(3)}, ${normalizedNormal.z.toFixed(3)})`);
+      console.log(`   Plane constant: ${planeConstant.toFixed(4)} (plane passes through: ${helperPosition.x.toFixed(2)}, ${helperPosition.y.toFixed(2)}, ${helperPosition.z.toFixed(2)}), normal: (${normalizedNormal.x.toFixed(3)}, ${normalizedNormal.y.toFixed(3)}, ${normalizedNormal.z.toFixed(3)})`);
     } catch (error) {
       console.warn('⚠️ Could not create section helper:', error);
     }
@@ -1248,7 +1297,18 @@ export class ViewsManager {
         return true;
       }
 
-      // Custom implementation: set camera position
+      // For section views, preserve camera position and only apply clipping plane
+      if (view.type === 'section' && view.normal && view.point) {
+        // Apply clipping plane without changing camera position
+        this.applyClippingPlane(viewId);
+        this.activeClippingPlane = this.clippingPlanes.get(viewId) || null;
+        view.active = true;
+        this.activeViewId = viewId;
+        console.log(`✅ Opened section view: ${view.name} (camera preserved, clipping plane applied)`);
+        return true;
+      }
+
+      // Custom implementation: set camera position (for non-section views)
       if ((view as any).cameraPosition && (view as any).cameraTarget) {
         // Try to set camera position and target using camera controls
         const cameraPos = (view as any).cameraPosition as THREE.Vector3;
@@ -1302,13 +1362,6 @@ export class ViewsManager {
         } catch (error) {
           console.error('❌ Could not set camera position:', error);
           return false;
-        }
-        
-        // Apply clipping plane if this is a section view
-        if (view.type === 'section' && view.normal && view.point) {
-          this.applyClippingPlane(viewId);
-          this.activeClippingPlane = this.clippingPlanes.get(viewId) || null;
-          console.log(`✅ Applied clipping plane for section view: ${view.name}`);
         }
         
         view.active = true;
