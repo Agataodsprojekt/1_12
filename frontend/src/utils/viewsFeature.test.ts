@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as THREE from "three";
-import { ViewsManager, View } from "./viewsFeature";
+import { ViewsManager, View } from "./views";
 
 // Mock getLoadedModels
 vi.mock("../lib/thatopen", () => ({

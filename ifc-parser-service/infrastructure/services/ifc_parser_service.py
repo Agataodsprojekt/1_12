@@ -450,4 +450,105 @@ class IfcParserService(IIfcParserService):
             return Result.success(True)
         except Exception as e:
             return Result.failure(f"Error validating IFC file: {str(e)}")
+    
+    # Search and filter
+    async def search_elements(
+        self,
+        query: str,
+        elements: List[IfcElement]
+    ) -> Result[List[Dict[str, Any]], str]:
+        """Search elements by query string"""
+        try:
+            query_lower = query.lower()
+            results = []
+            
+            for element in elements:
+                # Search in name
+                if element.name and query_lower in element.name.lower():
+                    results.append(self._element_to_dict(element))
+                    continue
+                
+                # Search in type_name
+                if element.type_name and query_lower in element.type_name.lower():
+                    results.append(self._element_to_dict(element))
+                    continue
+                
+                # Search in global_id
+                if element.global_id and query_lower in element.global_id.lower():
+                    results.append(self._element_to_dict(element))
+                    continue
+                
+                # Search in properties
+                for key, value in element.properties.items():
+                    if value and query_lower in str(value).lower():
+                        results.append(self._element_to_dict(element))
+                        break
+            
+            return Result.success(results)
+        except Exception as e:
+            return Result.failure(f"Error searching elements: {str(e)}")
+    
+    async def get_element(
+        self,
+        element_id: str,
+        elements: List[IfcElement]
+    ) -> Result[Dict[str, Any], str]:
+        """Get element details by ID"""
+        try:
+            for element in elements:
+                if element.global_id == element_id:
+                    return Result.success(self._element_to_dict(element))
+            
+            return Result.failure(f"Element {element_id} not found")
+        except Exception as e:
+            return Result.failure(f"Error getting element: {str(e)}")
+    
+    async def filter_elements(
+        self,
+        filters: Dict[str, Any],
+        elements: List[IfcElement]
+    ) -> Result[List[Dict[str, Any]], str]:
+        """Filter elements by criteria"""
+        try:
+            results = []
+            
+            for element in elements:
+                match = True
+                
+                # Filter by type_name
+                if "type_name" in filters:
+                    if element.type_name != filters["type_name"]:
+                        match = False
+                
+                # Filter by name (partial match)
+                if "name" in filters and match:
+                    if filters["name"].lower() not in element.name.lower():
+                        match = False
+                
+                # Filter by properties
+                if "properties" in filters and match:
+                    for prop_key, prop_value in filters["properties"].items():
+                        if prop_key not in element.properties:
+                            match = False
+                            break
+                        if str(element.properties[prop_key]) != str(prop_value):
+                            match = False
+                            break
+                
+                if match:
+                    results.append(self._element_to_dict(element))
+            
+            return Result.success(results)
+        except Exception as e:
+            return Result.failure(f"Error filtering elements: {str(e)}")
+    
+    def _element_to_dict(self, element: IfcElement) -> Dict[str, Any]:
+        """Convert IfcElement to dictionary"""
+        return {
+            "global_id": element.global_id,
+            "type_name": element.type_name,
+            "name": element.name,
+            "properties": element.properties,
+            "placement_matrix": element.placement_matrix if element.placement_matrix else None
+        }
 

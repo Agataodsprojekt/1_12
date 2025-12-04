@@ -13,13 +13,19 @@ import { CostSummary } from "../components/CostSummary";
 import { VisibilityControls } from "../components/VisibilityControls";
 import { ElementsList } from "../components/ElementsList";
 import { useTheme } from "../contexts/ThemeContext";
-import { useComments } from "../hooks/useComments";
+import { useComments, Comment } from "../hooks/useComments";
 import { useIFCData } from "../hooks/useIFCData";
+import { usePins } from "../hooks/usePins";
+import { useProject } from "../hooks/useProject";
+import { useViewsAPI } from "../hooks/useViewsAPI";
+import { useSelectionsAPI } from "../hooks/useSelectionsAPI";
+import { useMeasurementsAPI } from "../hooks/useMeasurementsAPI";
 import { SimpleDimensionTool } from "../utils/SimpleDimensionTool";
 import { SimpleVolumeTool } from "../utils/SimpleVolumeTool";
 import { SimpleHider } from "../utils/SimpleHider";
-import { enableViewsFeature, ViewsManager } from "../utils/viewsFeature";
+import { enableViewsFeature, ViewsManager } from "../utils/views";
 import { getFragmentsManager, getHider, setLoadedModels, getLoadedModels } from "../lib/thatopen";
+import { api } from "../lib/api";
 
 const Viewer = () => {
   const viewerContainerRef = useRef<HTMLDivElement>(null);
@@ -52,12 +58,21 @@ const Viewer = () => {
   const modelObjectsRef = useRef<THREE.Object3D[]>([]);
   const ifcLoaderRef = useRef<OBC.FragmentIfcLoader | null>(null);
   
-  // Stan dla pinowania elementów
-  const [isPinMode, setIsPinMode] = useState(false);
-  const [selectedPinColor, setSelectedPinColor] = useState("#000000"); // Domyślnie czarny
-  const [pinnedElements, setPinnedElements] = useState<Map<string, string>>(new Map());
-  const isPinModeRef = useRef(isPinMode);
+  // Pins - using hook with backend integration
+  const {
+    isPinMode,
+    setIsPinMode,
+    selectedPinColor,
+    setSelectedPinColor,
+    pinnedElements,
+    pinColors,
+    handlePinElement,
+    isPinModeRef,
+  } = usePins();
+  
+  // Keep refs for backward compatibility with existing code
   const selectedPinColorRef = useRef(selectedPinColor);
+  const pinnedElementsRef = useRef<Map<string, string>>(new Map());
   
   // Stan dla wymiarowania
   const [isDimensionMode, setIsDimensionMode] = useState(false);
@@ -97,6 +112,11 @@ const Viewer = () => {
   const scissorsPreviewLineRef = useRef<THREE.Line | null>(null);
   const viewsManagerRef = useRef<ViewsManager | null>(null);
   
+  // API hooks for backend integration
+  const viewsAPI = useViewsAPI();
+  const selectionsAPI = useSelectionsAPI();
+  const measurementsAPI = useMeasurementsAPI();
+  
   // Synchronizuj ref z state
   useEffect(() => {
     isAddSectionModeRef.current = isAddSectionMode;
@@ -118,13 +138,14 @@ const Viewer = () => {
   }, [isScissorsMode]);
   
   
-  useEffect(() => {
-    isPinModeRef.current = isPinMode;
-  }, [isPinMode]);
-  
+  // Sync refs with state (for backward compatibility)
   useEffect(() => {
     selectedPinColorRef.current = selectedPinColor;
   }, [selectedPinColor]);
+  
+  useEffect(() => {
+    pinnedElementsRef.current = pinnedElements;
+  }, [pinnedElements]);
   
   useEffect(() => {
     isVolumeModeRef.current = isVolumeMode;
@@ -170,11 +191,7 @@ const Viewer = () => {
     return () => clearInterval(animationInterval);
   }, [isDimensionMode]);
   
-  // Dostępne kolory do pinowania - tylko czarny i biały dla lepszej widoczności
-  const pinColors = [
-    { name: "Czarny", color: "#000000" },
-    { name: "Biały", color: "#FFFFFF" },
-  ];
+  // pinColors comes from usePins hook
   
   // Ref aby zawsze mieć dostęp do najnowszych komentarzy
   const commentsRef = useRef(comments);
@@ -304,7 +321,15 @@ const Viewer = () => {
     // --- VIEWS MANAGER ---
     const viewsManager = enableViewsFeature(viewer, scene, cameraComponent.get(), raycasterComponent);
     viewsManagerRef.current = viewsManager;
-    console.log('✅ ViewsManager initialized');
+    
+    // Integrate ViewsManager with API
+    viewsManager.setAPIIntegration({
+      createView: viewsAPI.createView,
+      updateView: viewsAPI.updateView,
+      deleteView: viewsAPI.deleteView,
+    });
+    
+    console.log('✅ ViewsManager initialized with API integration');
     
     // Ensure renderer has local clipping enabled
     try {
@@ -476,8 +501,8 @@ const Viewer = () => {
     const dimensions = new SimpleDimensionTool(scene, cameraComponent.get());
     dimensionsRef.current = dimensions;
     
-    // Callback wywoływany gdy wymiar jest tworzony (dla undo/redo)
-    dimensions.onMeasurementCreated = (dimensionData) => {
+    // Callback wywoływany gdy wymiar jest tworzony (dla undo/redo i API)
+    dimensions.onMeasurementCreated = async (dimensionData) => {
       const action: Action = {
         type: 'dimension_add',
         data: dimensionData,
@@ -485,6 +510,14 @@ const Viewer = () => {
       };
       saveAction(action);
       console.log('📏 Dimension saved to history');
+      
+      // Save to backend API
+      try {
+        await measurementsAPI.calculateDimension(dimensionData.start, dimensionData.end);
+        console.log('✅ Dimension saved to backend');
+      } catch (error) {
+        console.warn('⚠️ Failed to save dimension to backend:', error);
+      }
     };
     
     // Event listener dla ruchu myszy w trybie wymiarowania (podgląd)
@@ -585,6 +618,15 @@ const Viewer = () => {
             if (view) {
               console.log('✅ Scissors section created:', view.name);
               setIsScissorsMode(false);
+              
+              // Automatically open the view
+              try {
+                await viewsManagerRef.current.openView(view.id);
+                console.log('✅ Scissors section view automatically opened');
+              } catch (error) {
+                console.error('❌ Error auto-opening view:', error);
+              }
+              
               window.dispatchEvent(new CustomEvent('views-updated'));
             }
             
@@ -626,6 +668,15 @@ const Viewer = () => {
             if (view) {
               console.log('✅ Scissors section created:', view.name);
               setIsScissorsMode(false);
+              
+              // Automatically open the view
+              try {
+                await viewsManagerRef.current.openView(view.id);
+                console.log('✅ Scissors section view automatically opened');
+              } catch (error) {
+                console.error('❌ Error auto-opening view:', error);
+              }
+              
               window.dispatchEvent(new CustomEvent('views-updated'));
             }
             
@@ -851,9 +902,10 @@ const Viewer = () => {
     
     // Obsługa kliknięć: Shift + klik = dodaj punkt, Shift + podwójny klik = zaznacz do usunięcia
     const handleDimensionClickWithDelete = (event: MouseEvent) => {
-      // Check volume mode first
-      if (isVolumeModeRef.current && volumeMeasurerRef.current) {
-        volumeMeasurerRef.current.handleClick(event, modelObjectsRef.current);
+      // Volume mode doesn't use click handler - it calculates volume from selected elements
+      // Volume is calculated automatically when elements are selected via highlighter
+      if (isVolumeModeRef.current) {
+        // Volume measurement works through element selection, not clicks
         return;
       }
       
@@ -1279,7 +1331,7 @@ const Viewer = () => {
     const propertiesProcessor = new OBC.IfcPropertiesProcessor(viewer);
 
       // --- Po wczytaniu modelu ---
-    ifcLoader.onIfcLoaded.add(async (model) => {
+    ifcLoader.onIfcLoaded.add(async (model: any) => {
       // przetwarzanie właściwości
       propertiesProcessor.process(model);
       await highlighter.updateHighlight();
@@ -1335,7 +1387,7 @@ const Viewer = () => {
       console.log(`📏 Loaded ${meshes.length} objects for dimension tool`);
 
       // reagowanie na zaznaczenia
-      highlighter.events.select.onHighlight.add(async (selection) => {
+      highlighter.events.select.onHighlight.add(async (selection: any) => {
         const fragmentID = Object.keys(selection)[0];
         const expressID = Number([...selection[fragmentID]][0]);
         const elementIdStr = expressID.toString();
@@ -1366,7 +1418,16 @@ const Viewer = () => {
         if (isPinModeRef.current) {
           console.log("📌 Pin mode active - pinning element:", elementIdStr);
           
-          try {
+          // Use hook's handlePinElement which integrates with backend API
+          await handlePinElement(selection, highlighter, viewer, elementIdStr);
+          
+          return; // Nie pokazuj properties w trybie pinowania
+        }
+        
+        // OLD PIN LOGIC - REMOVED (now using usePins hook)
+        // Keeping this comment for reference - removed to fix syntax error
+        /*
+        try {
             // Określ styl na podstawie wybranego koloru
             // Normalizuj kolor do porównania (usuwając spacje i zmieniając na uppercase)
             const normalizedColor = selectedPinColorRef.current.trim().toUpperCase();
@@ -1374,15 +1435,107 @@ const Viewer = () => {
             console.log("📌 Selected pin style:", styleName, "for color:", selectedPinColorRef.current, "(normalized:", normalizedColor, ")");
             
             // Sprawdź czy element jest już przypięty
-            const currentStyle = pinnedElements.get(elementIdStr);
+            // CRITICAL: Użyj ref zamiast stanu, aby mieć aktualną wartość w funkcji asynchronicznej
+            const currentStyle = pinnedElementsRef.current.get(elementIdStr);
+            console.log(`📌 Checking if element ${elementIdStr} is pinned:`, {
+              currentStyle: currentStyle,
+              selectedStyle: styleName,
+              isPinned: !!currentStyle,
+              shouldUnpin: currentStyle === styleName,
+              pinnedElementsSize: pinnedElementsRef.current.size,
+              allPinnedElements: Array.from(pinnedElementsRef.current.entries())
+            });
             
             if (currentStyle) {
               // Element jest już przypięty - sprawdź czy to ten sam styl
               if (currentStyle === styleName) {
-                // Ten sam styl - odpiń element
+                // Ten sam styl - odpiń element (przywróć oryginalny kolor)
                 console.log("📌 Element already pinned with same style - unpinning");
+                
+                // Wyczyść styl tylko dla tego elementu
                 await highlighter.clear(currentStyle, selection);
-                setPinnedElements(prev => {
+                
+                // Przywróć oryginalny kolor materiału dla tego elementu
+                try {
+                  for (const fragID of Object.keys(selection)) {
+                    const instanceIDs = selection[fragID];
+                    console.log(`📌 Unpinning: Restoring color for fragment ${fragID}, instanceIDs:`, Array.from(instanceIDs));
+                    
+                    const scene = viewer.scene?.get();
+                    if (scene) {
+                      scene.traverse((child: any) => {
+                        if (child.fragment && child.fragment.id === fragID) {
+                          const mesh = child.fragment.mesh;
+                          if (mesh && mesh.material) {
+                            if (mesh instanceof THREE.InstancedMesh) {
+                              // CRITICAL: Mapuj expressID na indeks instancji
+                              const fragment = child.fragment;
+                              let fragmentIds: number[] = [];
+                              if (fragment.ids) {
+                                if (Array.isArray(fragment.ids)) {
+                                  fragmentIds = fragment.ids;
+                                } else if (fragment.ids instanceof Set) {
+                                  fragmentIds = Array.from(fragment.ids);
+                                } else if (fragment.ids instanceof Map) {
+                                  fragmentIds = Array.from(fragment.ids.keys());
+                                } else if (typeof fragment.ids === 'object') {
+                                  fragmentIds = Object.keys(fragment.ids).map(Number);
+                                }
+                              }
+                              
+                              // CRITICAL: Przywróć oryginalny kolor TYLKO dla instancji w selection
+                              const instanceIDsArray = Array.from(instanceIDs);
+                              instanceIDsArray.forEach((expressID: number) => {
+                                const instanceIndex = fragmentIds.indexOf(expressID);
+                                if (instanceIndex === -1) {
+                                  console.warn(`⚠️ Cannot unpin: ExpressID ${expressID} not found in fragment.ids!`);
+                                  return;
+                                }
+                                
+                                // Przywróć zapamiętany oryginalny kolor
+                                const originalColorData = originalColorsRef.current.get(elementIdStr);
+                                if (originalColorData) {
+                                  const originalColor = new THREE.Color(
+                                    originalColorData.color.r,
+                                    originalColorData.color.g,
+                                    originalColorData.color.b
+                                  );
+                                  mesh.setColorAt(instanceIndex, originalColor);
+                                  console.log(`📌 Restored original color for expressID ${expressID} (instance index ${instanceIndex}):`, originalColorData.color);
+                                  
+                                  // Usuń zapamiętany oryginalny kolor
+                                  originalColorsRef.current.delete(elementIdStr);
+                                } else {
+                                  // Jeśli nie mamy zapamiętanego koloru, użyj białego jako domyślnego
+                                  const whiteColor = new THREE.Color(0xFFFFFF);
+                                  mesh.setColorAt(instanceIndex, whiteColor);
+                                  console.log(`📌 Restored default color (white) for expressID ${expressID} (instance index ${instanceIndex}) - no original color saved`);
+                                }
+                              });
+                              
+                              if (mesh.instanceColor) {
+                                mesh.instanceColor.needsUpdate = true;
+                              }
+                              
+                              // Sprawdź, czy wszystkie instancje w fragmencie są odpięte
+                              // Jeśli tak, możemy wyłączyć vertexColors, aby użyć domyślnego koloru materiału
+                              // Ale na razie zostawiamy vertexColors włączone, bo inne instancje mogą być pinowane
+                              console.log(`✅ Unpinned element - restored white color`);
+                            } else if (mesh instanceof THREE.Mesh) {
+                              // Dla zwykłego Mesh, highlighter.clear powinien przywrócić oryginalny kolor
+                              console.log(`📌 Unpinning regular Mesh - highlighter.clear should restore color`);
+                            }
+                          }
+                        }
+                      });
+                    }
+                  }
+                  console.log(`✅ Unpinned element ${elementIdStr} - original colors restored`);
+                } catch (e) {
+                  console.error('❌ Error restoring original colors during unpin:', e);
+                }
+                
+                setPinnedElements((prev: Map<string, string>) => {
                   const newMap = new Map(prev);
                   newMap.delete(elementIdStr);
                   return newMap;
@@ -1391,14 +1544,20 @@ const Viewer = () => {
               } else {
                 // Inny styl - najpierw wyczyść poprzedni styl, potem przypnij nowym
                 console.log(`📌 Element pinned with different style (${currentStyle}) - clearing and repinning with ${styleName}`);
-                await highlighter.clear(currentStyle, selection);
-                await highlighter.highlightByID(styleName, selection, false);
                 
-                // Po highlightByID, spróbuj bezpośrednio ustawić kolory materiałów
+                // Wyczyść tylko ten element z poprzedniego stylu
+                await highlighter.clear(currentStyle, selection);
+                
+                // Przypnij tylko ten element nowym stylem
+                // CRITICAL: NIE używaj highlighter.highlightByID - ustaw kolory bezpośrednio
+                const targetColor = styleName === "pin-black" ? 0x000000 : 0xFFFFFF;
+                
                 try {
-                  const targetColor = styleName === "pin-black" ? 0x000000 : 0xFFFFFF;
-                  
+                  // CRITICAL: Użyj tylko selection dla tego jednego elementu
                   for (const fragID of Object.keys(selection)) {
+                    const instanceIDs = selection[fragID];
+                    console.log(`📌 Repinning: Setting color for fragment ${fragID}, instanceIDs:`, Array.from(instanceIDs));
+                    
                     const scene = viewer.scene?.get();
                     if (scene) {
                       scene.traverse((child: any) => {
@@ -1406,23 +1565,66 @@ const Viewer = () => {
                           const mesh = child.fragment.mesh;
                           if (mesh && mesh.material) {
                             if (mesh instanceof THREE.InstancedMesh) {
-                              const instanceIDs = selection[fragID];
-                              instanceIDs.forEach((instanceID: number) => {
+                              // CRITICAL: Mapuj expressID na indeks instancji
+                              const fragment = child.fragment;
+                              let fragmentIds: number[] = [];
+                              if (fragment.ids) {
+                                if (Array.isArray(fragment.ids)) {
+                                  fragmentIds = fragment.ids;
+                                } else if (fragment.ids instanceof Set) {
+                                  fragmentIds = Array.from(fragment.ids);
+                                } else if (fragment.ids instanceof Map) {
+                                  fragmentIds = Array.from(fragment.ids.keys());
+                                } else if (typeof fragment.ids === 'object') {
+                                  fragmentIds = Object.keys(fragment.ids).map(Number);
+                                }
+                              }
+                              
+                              // CRITICAL: Jeśli instanceColor nie istnieje, utwórz go i wypełnij białym
+                              if (!mesh.instanceColor) {
+                                const count = mesh.count;
+                                const colors = new Float32Array(count * 3);
+                                for (let i = 0; i < count; i++) {
+                                  colors[i * 3] = 1;
+                                  colors[i * 3 + 1] = 1;
+                                  colors[i * 3 + 2] = 1;
+                                }
+                                mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+                                mesh.instanceColor.needsUpdate = true;
+                              }
+                              
+                              // CRITICAL: Ustaw kolor TYLKO dla pinowanej instancji
+                              // NIE zmieniaj kolorów innych instancji - mogą być już pinowane
+                              const instanceIDsArray = Array.from(instanceIDs);
+                              console.log(`📌 Repinning ${instanceIDsArray.length} instance(s) - preserving other instance colors`);
+                              
+                              instanceIDsArray.forEach((expressID: number) => {
+                                const instanceIndex = fragmentIds.indexOf(expressID);
+                                if (instanceIndex === -1) {
+                                  console.warn(`⚠️ Cannot repin: ExpressID ${expressID} not found in fragment.ids!`);
+                                  return;
+                                }
+                                
+                                // CRITICAL: Nie nadpisuj oryginalnego koloru - zachowaj ten, który był zapamiętany przy pierwszym pinowaniu
+                                // (oryginalny kolor jest już zapamiętany w originalColorsRef)
+                                
                                 const color = new THREE.Color(targetColor);
-                                mesh.setColorAt(instanceID, color);
+                                mesh.setColorAt(instanceIndex, color);
+                                console.log(`📌 Set repin color ${targetColor.toString(16)} for expressID ${expressID} (instance index ${instanceIndex})`);
                               });
+                              
                               if (mesh.instanceColor) {
                                 mesh.instanceColor.needsUpdate = true;
                               }
                               if (Array.isArray(mesh.material)) {
                                 mesh.material.forEach((mat: any) => {
                                   if (mat) {
-                                    mat.vertexColors = true;
+                                    mat.vertexColors = THREE.VertexColors;
                                     mat.needsUpdate = true;
                                   }
                                 });
                               } else if (mesh.material) {
-                                (mesh.material as any).vertexColors = true;
+                                (mesh.material as any).vertexColors = THREE.VertexColors;
                                 (mesh.material as any).needsUpdate = true;
                               }
                             } else if (mesh instanceof THREE.Mesh) {
@@ -1443,11 +1645,12 @@ const Viewer = () => {
                       });
                     }
                   }
+                  console.log(`✅ Repinned element ${elementIdStr} with color ${targetColor.toString(16)}`);
                 } catch (e) {
-                  console.warn('⚠️ Could not directly set pin colors during repin:', e);
+                  console.error('❌ Error repinning element:', e);
                 }
                 
-                setPinnedElements(prev => {
+                setPinnedElements((prev: Map<string, string>) => {
                   const newMap = new Map(prev);
                   newMap.set(elementIdStr, styleName);
                   return newMap;
@@ -1457,47 +1660,318 @@ const Viewer = () => {
             } else {
               // Element nie jest przypięty - przypnij go
               console.log(`📌 Pinning element with style ${styleName}`);
-              await highlighter.highlightByID(styleName, selection, false);
               
-              // Po highlightByID, spróbuj bezpośrednio ustawić kolory materiałów
-              // FragmentHighlighter może nie ustawiać kolorów poprawnie dla niestandardowych stylów
+              // CRITICAL: NIE używaj highlighter.highlightByID - może kolorować wszystkie elementy
+              // Zamiast tego, ustaw kolory bezpośrednio tylko dla klikniętego elementu
+              const targetColor = styleName === "pin-black" ? 0x000000 : 0xFFFFFF;
+              
               try {
-                const highlighterAny = highlighter as any;
-                const targetColor = styleName === "pin-black" ? 0x000000 : 0xFFFFFF;
-                
-                // Znajdź wszystkie fragmenty w selection i ustaw kolory materiałów
+                // CRITICAL: Użyj tylko selection dla tego jednego elementu
                 for (const fragID of Object.keys(selection)) {
+                  const instanceIDs = selection[fragID];
+                  console.log(`📌 Setting color for fragment ${fragID}, instanceIDs:`, Array.from(instanceIDs));
+                  
                   // Spróbuj znaleźć fragment w scenie
                   const scene = viewer.scene?.get();
                   if (scene) {
+                    let foundFragment = false;
+                    let totalFragments = 0;
+                    
                     scene.traverse((child: any) => {
-                      if (child.fragment && child.fragment.id === fragID) {
-                        const mesh = child.fragment.mesh;
-                        if (mesh && mesh.material) {
-                          // Dla InstancedMesh, ustaw kolor dla każdej instancji w selection
+                      if (child.fragment) {
+                        totalFragments++;
+                        if (child.fragment.id === fragID) {
+                          foundFragment = true;
+                          console.log(`📌 Found target fragment ${fragID} (total fragments in scene: ${totalFragments})`);
+                          
+                          const mesh = child.fragment.mesh;
+                          const fragment = child.fragment;
+                          
+                          if (mesh && mesh.material) {
+                          // Dla InstancedMesh, ustaw kolor TYLKO dla instancji w selection
                           if (mesh instanceof THREE.InstancedMesh) {
-                            const instanceIDs = selection[fragID];
-                            instanceIDs.forEach((instanceID: number) => {
+                            // CRITICAL: Mapuj expressID na indeks instancji używając fragment.ids
+                            let fragmentIds: number[] = [];
+                            if (fragment.ids) {
+                              if (Array.isArray(fragment.ids)) {
+                                fragmentIds = fragment.ids;
+                              } else if (fragment.ids instanceof Set) {
+                                fragmentIds = Array.from(fragment.ids);
+                              } else if (fragment.ids instanceof Map) {
+                                fragmentIds = Array.from(fragment.ids.keys());
+                              } else if (typeof fragment.ids === 'object') {
+                                fragmentIds = Object.keys(fragment.ids).map(Number);
+                              }
+                            }
+                            
+                            console.log(`📌 Fragment has ${fragmentIds.length} IDs, mesh has ${mesh.count} instances`);
+                            
+                            // CRITICAL: Jeśli instanceColor nie istnieje, utwórz go i wypełnij białym dla wszystkich instancji
+                            if (!mesh.instanceColor) {
+                              console.log(`📌 Creating instanceColor buffer for ${mesh.count} instances`);
+                              const count = mesh.count;
+                              const colors = new Float32Array(count * 3);
+                              
+                              // Wypełnij domyślnym kolorem (biały = 1,1,1) dla wszystkich instancji
+                              for (let i = 0; i < count; i++) {
+                                colors[i * 3] = 1;     // R
+                                colors[i * 3 + 1] = 1; // G
+                                colors[i * 3 + 2] = 1; // B
+                              }
+                              
+                              mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+                              mesh.instanceColor.needsUpdate = true;
+                              console.log(`✅ Created instanceColor buffer with white color for all ${count} instances`);
+                            } else {
+                              // Sprawdź, czy wszystkie instancje mają ustawione kolory
+                              // Jeśli nie, wypełnij białym kolorem
+                              const existingColors = mesh.instanceColor.array as Float32Array;
+                              const count = mesh.count;
+                              let needsInit = false;
+                              
+                              // Sprawdź, czy wszystkie kolory są ustawione (nie są zerami)
+                              for (let i = 0; i < count; i++) {
+                                const r = existingColors[i * 3];
+                                const g = existingColors[i * 3 + 1];
+                                const b = existingColors[i * 3 + 2];
+                                
+                                // Jeśli wszystkie wartości są 0, to znaczy że kolor nie był ustawiony
+                                if (r === 0 && g === 0 && b === 0) {
+                                  needsInit = true;
+                                  existingColors[i * 3] = 1;
+                                  existingColors[i * 3 + 1] = 1;
+                                  existingColors[i * 3 + 2] = 1;
+                                }
+                              }
+                              
+                              if (needsInit) {
+                                mesh.instanceColor.needsUpdate = true;
+                                console.log(`✅ Initialized missing colors in instanceColor buffer`);
+                              }
+                            }
+                            
+                            // CRITICAL: Ustaw kolor TYLKO dla pinowanej instancji
+                            // Mapuj expressID na indeks instancji
+                            const instanceIDsArray = Array.from(instanceIDs);
+                            console.log(`📌 Pinning ${instanceIDsArray.length} instance(s) (expressIDs), mapping to instance indices`);
+                            
+                            // Ustaw kolor dla pinowanej instancji - mapuj expressID na indeks
+                            instanceIDsArray.forEach((expressID: number) => {
+                              const instanceIndex = fragmentIds.indexOf(expressID);
+                              if (instanceIndex === -1) {
+                                console.warn(`⚠️ ExpressID ${expressID} not found in fragment.ids!`);
+                                return;
+                              }
+                              
+                              // CRITICAL: Zapamiętaj oryginalny kolor przed pinowaniem
+                              if (!originalColorsRef.current.has(elementIdStr)) {
+                                // Sprawdź, jaki kolor ma teraz instancja
+                                let originalR = 1, originalG = 1, originalB = 1; // Domyślnie biały
+                                
+                                if (mesh.instanceColor) {
+                                  const colorArray = mesh.instanceColor.array as Float32Array;
+                                  originalR = colorArray[instanceIndex * 3];
+                                  originalG = colorArray[instanceIndex * 3 + 1];
+                                  originalB = colorArray[instanceIndex * 3 + 2];
+                                  
+                                  // Jeśli kolor jest czarny (0,0,0), to prawdopodobnie nie był ustawiony - użyj białego
+                                  if (originalR === 0 && originalG === 0 && originalB === 0) {
+                                    originalR = 1;
+                                    originalG = 1;
+                                    originalB = 1;
+                                  }
+                                }
+                                
+                                originalColorsRef.current.set(elementIdStr, {
+                                  fragmentId: fragID,
+                                  instanceIndex: instanceIndex,
+                                  color: { r: originalR, g: originalG, b: originalB }
+                                });
+                                
+                                console.log(`📌 Saved original color for element ${elementIdStr}:`, { r: originalR, g: originalG, b: originalB });
+                              }
+                              
                               const color = new THREE.Color(targetColor);
-                              mesh.setColorAt(instanceID, color);
+                              mesh.setColorAt(instanceIndex, color);
+                              console.log(`📌 Set pin color ${targetColor.toString(16)} for expressID ${expressID} (instance index ${instanceIndex})`);
                             });
+                            
+                            // Dla pozostałych instancji: jeśli instanceColor nie istnieje lub instancja nie ma koloru, ustaw biały
+                            // Ale NIE zmieniaj kolorów instancji, które już mają ustawione kolory (mogą być pinowane)
+                            if (!mesh.instanceColor) {
+                              // Jeśli instanceColor nie istnieje, utwórz go i wypełnij białym dla wszystkich
+                              const count = mesh.count;
+                              const colors = new Float32Array(count * 3);
+                              for (let i = 0; i < count; i++) {
+                                colors[i * 3] = 1;
+                                colors[i * 3 + 1] = 1;
+                                colors[i * 3 + 2] = 1;
+                              }
+                              mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+                              mesh.instanceColor.needsUpdate = true;
+                              console.log(`📌 Created instanceColor buffer with white for all ${count} instances`);
+                            } else {
+                              // Jeśli instanceColor istnieje, ustaw biały TYLKO dla instancji, które nie są pinowane i nie mają koloru
+                              // Mapuj expressID na indeksy instancji
+                              const pinnedInstanceIndices = new Set<number>();
+                              instanceIDsArray.forEach((expressID: number) => {
+                                const instanceIndex = fragmentIds.indexOf(expressID);
+                                if (instanceIndex !== -1) {
+                                  pinnedInstanceIndices.add(instanceIndex);
+                                }
+                              });
+                              
+                              const colorArray = mesh.instanceColor.array as Float32Array;
+                              const count = mesh.count;
+                              let fixedCount = 0;
+                              
+                              for (let i = 0; i < count; i++) {
+                                // Pomiń instancje, które są właśnie pinowane
+                                if (pinnedInstanceIndices.has(i)) {
+                                  continue;
+                                }
+                                
+                                const r = colorArray[i * 3];
+                                const g = colorArray[i * 3 + 1];
+                                const b = colorArray[i * 3 + 2];
+                                
+                                // Jeśli kolor jest czarny (0,0,0) lub bardzo ciemny, ustaw biały
+                                // Ale jeśli ma jakiś kolor (np. z poprzedniego pinowania), zachowaj go
+                                if (r === 0 && g === 0 && b === 0) {
+                                  colorArray[i * 3] = 1;
+                                  colorArray[i * 3 + 1] = 1;
+                                  colorArray[i * 3 + 2] = 1;
+                                  fixedCount++;
+                                }
+                              }
+                              
+                              if (fixedCount > 0) {
+                                mesh.instanceColor.needsUpdate = true;
+                                console.log(`📌 Fixed ${fixedCount} black instances to white (preserved ${count - fixedCount - pinnedInstanceIndices.size} other colors)`);
+                              }
+                            }
+                            
                             if (mesh.instanceColor) {
                               mesh.instanceColor.needsUpdate = true;
                             }
+                            
                             // Upewnij się, że materiał używa kolorów instancji
-                            if (Array.isArray(mesh.material)) {
-                              mesh.material.forEach((mat: any) => {
-                                if (mat) {
-                                  mat.vertexColors = true;
-                                  mat.needsUpdate = true;
+                            // CRITICAL: Sprawdź stan przed zmianą
+                            const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+                            console.log(`📌 Checking materials for fragment ${fragID}:`, {
+                              materialCount: materials.length,
+                              hasInstanceColor: !!mesh.instanceColor,
+                              instanceCount: mesh.count,
+                              instanceIDsBeingColored: Array.from(instanceIDs)
+                            });
+                            
+                            materials.forEach((mat: any, index: number) => {
+                              if (mat) {
+                                const hadVertexColors = mat.vertexColors;
+                                // CRITICAL: Użyj THREE.VertexColors zamiast true dla InstancedMesh
+                                mat.vertexColors = THREE.VertexColors;
+                                mat.needsUpdate = true;
+                                console.log(`📌 Material ${index}: vertexColors changed from ${hadVertexColors} to THREE.VertexColors`);
+                                console.log(`📌 Material ${index} properties:`, {
+                                  type: mat.type,
+                                  color: mat.color ? mat.color.getHexString() : 'no color',
+                                  vertexColors: mat.vertexColors,
+                                  needsUpdate: mat.needsUpdate
+                                });
+                              }
+                            });
+                            
+                              // CRITICAL: Sprawdź, czy wszystkie instancje mają ustawione kolory
+                              if (mesh.instanceColor) {
+                                const colorArray = mesh.instanceColor.array as Float32Array;
+                                const count = mesh.count;
+                                let blackCount = 0;
+                                let whiteCount = 0;
+                                let otherCount = 0;
+                                
+                                // Sprawdź kolory dla pierwszych 3 instancji (dla debugowania)
+                                const sampleColors: any[] = [];
+                                for (let i = 0; i < Math.min(3, count); i++) {
+                                  const r = colorArray[i * 3];
+                                  const g = colorArray[i * 3 + 1];
+                                  const b = colorArray[i * 3 + 2];
+                                  sampleColors.push({ instance: i, r, g, b });
+                                }
+                                
+                                for (let i = 0; i < count; i++) {
+                                  const r = colorArray[i * 3];
+                                  const g = colorArray[i * 3 + 1];
+                                  const b = colorArray[i * 3 + 2];
+                                  
+                                  if (r === 0 && g === 0 && b === 0) {
+                                    blackCount++;
+                                  } else if (Math.abs(r - 1) < 0.01 && Math.abs(g - 1) < 0.01 && Math.abs(b - 1) < 0.01) {
+                                    whiteCount++;
+                                  } else {
+                                    otherCount++;
+                                  }
+                                }
+                                
+                                console.log(`📌 InstanceColor status after pinning:`, {
+                                  totalInstances: count,
+                                  blackInstances: blackCount,
+                                  whiteInstances: whiteCount,
+                                  otherColorInstances: otherCount,
+                                  pinnedInstanceIDs: Array.from(instanceIDs),
+                                  sampleColors: sampleColors,
+                                  instanceColorBufferExists: !!mesh.instanceColor,
+                                  instanceColorNeedsUpdate: mesh.instanceColor.needsUpdate
+                                });
+                                
+                                // Sprawdź kolor dla pinowanej instancji - mapuj expressID na indeks
+                                instanceIDs.forEach((expressID: number) => {
+                                  const instanceIndex = fragmentIds.indexOf(expressID);
+                                  if (instanceIndex === -1) {
+                                    console.warn(`⚠️ Cannot check color: ExpressID ${expressID} not found in fragment.ids!`);
+                                    return;
+                                  }
+                                  
+                                  const r = colorArray[instanceIndex * 3];
+                                  const g = colorArray[instanceIndex * 3 + 1];
+                                  const b = colorArray[instanceIndex * 3 + 2];
+                                  console.log(`📌 Pinned expressID ${expressID} (instance index ${instanceIndex}) color:`, { r, g, b, hex: `#${Math.round(r*255).toString(16).padStart(2,'0')}${Math.round(g*255).toString(16).padStart(2,'0')}${Math.round(b*255).toString(16).padStart(2,'0')}` });
+                                });
+                              
+                              // Jeśli są czarne instancje, które nie powinny być czarne, wypełnij je białym
+                              // Mapuj expressID na indeksy instancji
+                              const pinnedInstanceIndices = new Set<number>();
+                              instanceIDs.forEach((expressID: number) => {
+                                const instanceIndex = fragmentIds.indexOf(expressID);
+                                if (instanceIndex !== -1) {
+                                  pinnedInstanceIndices.add(instanceIndex);
                                 }
                               });
-                            } else if (mesh.material) {
-                              (mesh.material as any).vertexColors = true;
-                              (mesh.material as any).needsUpdate = true;
+                              
+                              if (blackCount > 0 && blackCount !== pinnedInstanceIndices.size) {
+                                console.warn(`⚠️ Found ${blackCount} black instances that shouldn't be black! Fixing...`);
+                                for (let i = 0; i < count; i++) {
+                                  // Sprawdź, czy ta instancja nie jest pinowana
+                                  const isPinned = pinnedInstanceIndices.has(i);
+                                  if (!isPinned) {
+                                    const r = colorArray[i * 3];
+                                    const g = colorArray[i * 3 + 1];
+                                    const b = colorArray[i * 3 + 2];
+                                    
+                                    // Jeśli jest czarna, ustaw na białą
+                                    if (r === 0 && g === 0 && b === 0) {
+                                      colorArray[i * 3] = 1;
+                                      colorArray[i * 3 + 1] = 1;
+                                      colorArray[i * 3 + 2] = 1;
+                                      console.log(`📌 Fixed black instance index ${i} to white`);
+                                    }
+                                  }
+                                }
+                                mesh.instanceColor.needsUpdate = true;
+                              }
                             }
                           } else if (mesh instanceof THREE.Mesh) {
                             // Dla zwykłego Mesh, ustaw kolor materiału
+                            console.log(`📌 Setting color for regular Mesh`);
                             if (Array.isArray(mesh.material)) {
                               mesh.material.forEach((mat: any) => {
                                 if (mat && mat.color) {
@@ -1510,17 +1984,29 @@ const Viewer = () => {
                               (mesh.material as any).needsUpdate = true;
                             }
                           }
+                        } else {
+                          console.warn(`⚠️ Fragment ${fragID} found but mesh or material is missing`);
                         }
+                      } else {
+                        // To jest inny fragment - nie modyfikuj go
+                        // console.log(`⏭️ Skipping fragment ${child.fragment.id} (not target ${fragID})`);
                       }
-                    });
+                    }
+                  });
+                    
+                    if (!foundFragment) {
+                      console.error(`❌ Fragment ${fragID} not found in scene! Total fragments: ${totalFragments}`);
+                    }
+                  } else {
+                    console.error(`❌ Scene not available!`);
                   }
                 }
-                console.log(`✅ Applied color ${targetColor.toString(16)} to pinned elements`);
+                console.log(`✅ Applied color ${targetColor.toString(16)} to pinned element ${elementIdStr} only`);
               } catch (e) {
-                console.warn('⚠️ Could not directly set pin colors:', e);
+                console.error('❌ Error setting pin colors:', e);
               }
               
-              setPinnedElements(prev => {
+              setPinnedElements((prev: Map<string, string>) => {
                 const newMap = new Map(prev);
                 newMap.set(elementIdStr, styleName);
                 return newMap;
@@ -1530,9 +2016,7 @@ const Viewer = () => {
           } catch (error) {
             console.error("❌ Error pinning element:", error);
           }
-          
-          return; // Nie pokazuj properties w trybie pinowania
-        }
+          */
         
         // Normalny tryb - zawsze pokaż properties
         propertiesProcessor.renderProperties(model, expressID);
@@ -1641,11 +2125,11 @@ const Viewer = () => {
 
       // Znajdź światła w scenie
       const ambientLight = scene.children.find(
-        (child) => child instanceof THREE.AmbientLight
+        (child: THREE.Object3D) => child instanceof THREE.AmbientLight
       ) as THREE.AmbientLight | undefined;
       
       const directionalLight = scene.children.find(
-        (child) => child instanceof THREE.DirectionalLight
+        (child: THREE.Object3D) => child instanceof THREE.DirectionalLight
       ) as THREE.DirectionalLight | undefined;
 
       // Zmień kolor tła i intensywność świateł w zależności od motywu
@@ -1668,7 +2152,10 @@ const Viewer = () => {
   // Zapisz stan kamery
   // Funkcja do zapisywania akcji w historii
   const saveAction = (action: Action) => {
-    if (isRestoringState.current) return;
+    if (isRestoringState.current) {
+      console.log('⏸️ Skipping save - restoring state');
+      return;
+    }
     
     // Usuń wszystkie akcje po aktualnym indeksie (jeśli użytkownik zrobił undo i potem nową akcję)
     actionHistory.current = actionHistory.current.slice(0, historyIndex.current + 1);
@@ -1677,7 +2164,7 @@ const Viewer = () => {
     actionHistory.current.push(action);
     historyIndex.current = actionHistory.current.length - 1;
     
-    console.log(`💾 Action saved: ${action.type}, history size:`, actionHistory.current.length);
+    console.log(`💾 Action saved: ${action.type}, history size: ${actionHistory.current.length}, index: ${historyIndex.current}`);
   };
   
   const saveCameraState = () => {
@@ -1717,16 +2204,30 @@ const Viewer = () => {
 
   // Undo - cofnij ostatnią akcję
   const handleUndo = () => {
-    if (historyIndex.current <= 0 || !viewerRef.current || !dimensionsRef.current) {
-      console.log("⚠️ Cannot undo - at the beginning of history");
+    console.log("🔍 Undo attempt:", {
+      historyIndex: historyIndex.current,
+      historyLength: actionHistory.current.length,
+      history: actionHistory.current.map((a: Action) => ({ type: a.type, timestamp: a.timestamp }))
+    });
+    
+    if (historyIndex.current <= 0 || !viewerRef.current) {
+      console.log("⚠️ Cannot undo - at the beginning of history", {
+        historyIndex: historyIndex.current,
+        historyLength: actionHistory.current.length
+      });
       return;
     }
     
     historyIndex.current--;
     const action = actionHistory.current[historyIndex.current];
     
+    if (!action) {
+      console.warn('⚠️ No action found at index', historyIndex.current);
+      historyIndex.current++;
+      return;
+    }
+    
     console.log(`⏪ Undo - restoring state to: ${action.type}`, historyIndex.current);
-    isRestoringState.current = true;
     
     // Przywróć stan w zależności od typu akcji
     if (action.type === 'camera') {
@@ -1764,33 +2265,54 @@ const Viewer = () => {
       );
     } else if (action.type === 'dimension_add') {
       // Cofnij dodanie wymiaru = usuń ostatni wymiar
+      if (!dimensionsRef.current) {
+        console.warn('⚠️ Dimensions tool not available for undo');
+        isRestoringState.current = false;
+        historyIndex.current++; // Cofnij zmianę indeksu
+        return;
+      }
       const dimensionData = action.data as DimensionData;
       dimensionsRef.current.deleteMeasurementSilent(dimensionData.group);
       console.log('⏪ Dimension removed (undo add)');
     } else if (action.type === 'dimension_delete') {
       // Cofnij usunięcie wymiaru = dodaj wymiar z powrotem
+      if (!dimensionsRef.current) {
+        console.warn('⚠️ Dimensions tool not available for undo');
+        isRestoringState.current = false;
+        historyIndex.current++; // Cofnij zmianę indeksu
+        return;
+      }
       const dimensionData = action.data as DimensionData;
       dimensionsRef.current.restoreMeasurement(dimensionData);
       console.log('⏪ Dimension restored (undo delete)');
+      
+      // Dla wymiarów nie ma problemu z controlend, więc możemy szybciej zresetować flagę
+      setTimeout(() => {
+        isRestoringState.current = false;
+      }, 100);
     }
-    
-    setTimeout(() => {
-      isRestoringState.current = false;
-    }, 100);
   };
 
   // Redo - przywróć cofniętą akcję
   const handleRedo = () => {
-    if (historyIndex.current >= actionHistory.current.length - 1 || !viewerRef.current || !dimensionsRef.current) {
-      console.log("⚠️ Cannot redo - at the end of history");
+    if (historyIndex.current >= actionHistory.current.length - 1 || !viewerRef.current) {
+      console.log("⚠️ Cannot redo - at the end of history", {
+        historyIndex: historyIndex.current,
+        historyLength: actionHistory.current.length
+      });
       return;
     }
     
     historyIndex.current++;
     const action = actionHistory.current[historyIndex.current];
     
+    if (!action) {
+      console.warn('⚠️ No action found at index', historyIndex.current);
+      historyIndex.current--;
+      return;
+    }
+    
     console.log(`⏩ Redo - applying action: ${action.type}`, historyIndex.current);
-    isRestoringState.current = true;
     
     // Zastosuj akcję ponownie
     if (action.type === 'camera') {
@@ -1817,6 +2339,10 @@ const Viewer = () => {
       }
       
       threeCamera.position.copy(cameraState.position);
+      
+      // Ustaw flagę przed zmianą kamery, aby nie zapisać nowego stanu
+      isRestoringState.current = true;
+      
       camera.controls.setLookAt(
         cameraState.position.x,
         cameraState.position.y,
@@ -1826,21 +2352,46 @@ const Viewer = () => {
         cameraState.target.z,
         false
       );
+      
+      // Wydłuż timeout, aby upewnić się, że event controlend nie zapisze nowego stanu
+      // controlend ma debounce 300ms, więc potrzebujemy co najmniej 500ms
+      setTimeout(() => {
+        isRestoringState.current = false;
+        console.log('✅ Restore state flag cleared (redo)');
+      }, 600);
     } else if (action.type === 'dimension_add') {
       // Ponów dodanie wymiaru
+      if (!dimensionsRef.current) {
+        console.warn('⚠️ Dimensions tool not available for redo');
+        isRestoringState.current = false;
+        historyIndex.current--; // Cofnij zmianę indeksu
+        return;
+      }
       const dimensionData = action.data as DimensionData;
       dimensionsRef.current.restoreMeasurement(dimensionData);
       console.log('⏩ Dimension restored (redo add)');
+      
+      // Dla wymiarów nie ma problemu z controlend, więc możemy szybciej zresetować flagę
+      setTimeout(() => {
+        isRestoringState.current = false;
+      }, 100);
     } else if (action.type === 'dimension_delete') {
       // Ponów usunięcie wymiaru
+      if (!dimensionsRef.current) {
+        console.warn('⚠️ Dimensions tool not available for redo');
+        isRestoringState.current = false;
+        historyIndex.current--; // Cofnij zmianę indeksu
+        return;
+      }
       const dimensionData = action.data as DimensionData;
       dimensionsRef.current.deleteMeasurementSilent(dimensionData.group);
       console.log('⏩ Dimension removed (redo delete)');
+      
+      // Dla wymiarów nie ma problemu z controlend, więc możemy szybciej zresetować flagę
+      setTimeout(() => {
+        isRestoringState.current = false;
+      }, 100);
     }
-    
-    setTimeout(() => {
-      isRestoringState.current = false;
-    }, 100);
   };
 
   // Funkcja wyszukiwania elementów
@@ -1852,6 +2403,62 @@ const Viewer = () => {
       properties: Record<string, any>;
     }> = [];
 
+    // Try API search first
+    try {
+      // Convert elements to API format
+      const elementsForAPI: any[] = [];
+      for (const model of loadedModelsRef.current) {
+        try {
+          const allIDs = await model.getAllPropertiesOfType(0);
+          if (allIDs && Object.keys(allIDs).length > 0) {
+            for (const id of Object.keys(allIDs)) {
+              try {
+                const props = await model.getProperties(Number(id));
+                if (props) {
+                  elementsForAPI.push({
+                    global_id: props.GlobalId?.value || id,
+                    type_name: props.type || 'Unknown',
+                    name: props.Name?.value || `Element ${id}`,
+                    properties: props,
+                  });
+                }
+              } catch (e) {
+                // Skip individual errors
+              }
+            }
+          }
+        } catch (e) {
+          // Skip model errors
+        }
+      }
+
+      if (elementsForAPI.length > 0) {
+        const apiResults = await api.search.searchElements(query, elementsForAPI);
+        
+        // Convert API results to local format
+        for (const apiResult of apiResults) {
+          // Find matching element in loaded models
+          const expressID = parseInt(apiResult.global_id || '0');
+          if (expressID) {
+            results.push({
+              expressID,
+              name: apiResult.name || `Element ${expressID}`,
+              type: apiResult.type_name || 'Unknown',
+              properties: apiResult.properties || {},
+            });
+          }
+        }
+        
+        if (results.length > 0) {
+          console.log(`✅ Found ${results.length} results via API`);
+          return results;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ API search failed, falling back to local search:', error);
+    }
+
+    // Fallback to local search
     const lowerQuery = query.toLowerCase();
 
     for (const model of loadedModelsRef.current) {
@@ -2081,7 +2688,7 @@ const Viewer = () => {
   // Funkcje zarządzania selekcją
   const addToSelection = async (expressID: number) => {
     // Sprawdź czy element już jest w selekcji
-    if (selectedElements.some(el => el.expressID === expressID)) {
+    if (selectedElements.some((el: SelectedElement) => el.expressID === expressID)) {
       console.log('Element already in selection:', expressID);
       return;
     }
@@ -2106,13 +2713,26 @@ const Viewer = () => {
     }
 
     if (elementInfo) {
-      setSelectedElements(prev => [...prev, elementInfo!]);
+      setSelectedElements((prev: SelectedElement[]) => [...prev, elementInfo!]);
       console.log('✅ Added to selection:', elementInfo);
+      
+      // Save selection to backend API
+      try {
+        const elementIds = [...selectedElements, elementInfo].map((el) => el.expressID.toString());
+        await selectionsAPI.createSelection(
+          `Selection ${new Date().toLocaleString()}`,
+          elementIds,
+          { created_at: new Date().toISOString() }
+        );
+        console.log('✅ Selection saved to backend');
+      } catch (error) {
+        console.warn('⚠️ Failed to save selection to backend:', error);
+      }
     }
   };
 
   const removeFromSelection = (expressID: number) => {
-    setSelectedElements(prev => prev.filter(el => el.expressID !== expressID));
+    setSelectedElements((prev: SelectedElement[]) => prev.filter((el: SelectedElement) => el.expressID !== expressID));
     console.log('❌ Removed from selection:', expressID);
   };
 
@@ -2123,11 +2743,25 @@ const Viewer = () => {
 
   const isolateElements = async () => {
     if (!viewerRef.current || selectedElements.length === 0) return;
+    
+    // Save isolation to backend API
+    try {
+      const elementIds = selectedElements.map((el) => el.expressID.toString());
+      const selection = await selectionsAPI.createSelection(
+        `Isolated Selection ${new Date().toLocaleString()}`,
+        elementIds,
+        { isolated: true, created_at: new Date().toISOString() }
+      );
+      await selectionsAPI.isolateSelection(selection.id);
+      console.log('✅ Isolation saved to backend');
+    } catch (error) {
+      console.warn('⚠️ Failed to save isolation to backend:', error);
+    }
 
     // Jeśli Hider jest dostępny, użyj go
     if (hiderRef.current) {
       try {
-        const selectedIDs = new Set(selectedElements.map(el => el.expressID));
+        const selectedIDs = new Set(selectedElements.map((el: SelectedElement) => el.expressID));
         
         console.log('🔍 Starting isolation for', selectedElements.length, 'elements using Hider');
         console.log('Selected IDs:', Array.from(selectedIDs));
@@ -2385,8 +3019,44 @@ const Viewer = () => {
     }
     
     
-    // TODO: Implement other action handlers
-    // - camera: capture screenshots
+    // Screenshot functionality
+    if (action === "camera") {
+      handleScreenshot();
+      return;
+    }
+  };
+  
+  const handleScreenshot = () => {
+    if (!viewerRef.current || !viewerContainerRef.current) {
+      console.warn('⚠️ Cannot capture screenshot: viewer not ready');
+      return;
+    }
+    
+    try {
+      const canvas = viewerContainerRef.current.querySelector('canvas');
+      if (!canvas) {
+        console.warn('⚠️ Cannot capture screenshot: canvas not found');
+        return;
+      }
+      
+      // Convert canvas to data URL
+      const dataURL = canvas.toDataURL('image/png');
+      
+      // Create download link
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.download = `screenshot-${timestamp}.png`;
+      link.href = dataURL;
+      
+      // Trigger download
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      console.log('📸 Screenshot captured and downloaded');
+    } catch (error) {
+      console.error('❌ Error capturing screenshot:', error);
+    }
   };
 
   const handleAddComment = (text: string, elementId?: string, elementName?: string) => {
@@ -2461,7 +3131,7 @@ const Viewer = () => {
     }
     
     // Pobierz komentarze dla tego elementu - używamy ref aby mieć najnowsze dane
-    const elementComments = commentsRef.current.filter((comment) => comment.elementId === elementId);
+    const elementComments = commentsRef.current.filter((comment: Comment) => comment.elementId === elementId);
     
     // Utwórz sekcję komentarzy
     try {
@@ -2526,7 +3196,7 @@ const Viewer = () => {
 
       // Lista komentarzy lub komunikat o braku komentarzy
       if (elementComments.length > 0) {
-        elementComments.forEach((comment) => {
+        elementComments.forEach((comment: Comment) => {
           const commentDiv = document.createElement('div');
           commentDiv.style.cssText = `
             background-color: hsl(var(--background));
@@ -3071,6 +3741,7 @@ const Viewer = () => {
         }}>
           <div style={{ pointerEvents: 'auto' }}>
             <VisibilityControls
+              elements={elements}
               visibleTypes={visibleTypes}
               onTypeVisibilityChange={handleTypeVisibilityChange}
               onShowAll={showAllTypes}
@@ -3347,7 +4018,7 @@ const Viewer = () => {
             console.log('🔄 Add Section Mode:', !isAddSectionMode);
           }}
           isAddSectionMode={isAddSectionMode}
-          onScissorsMode={(enabled) => {
+          onScissorsMode={(enabled: boolean) => {
             setIsScissorsMode(enabled);
             if (enabled) setIsAddSectionMode(false); // Disable add section when enabling scissors
             console.log('✂️ Scissors Mode:', enabled);
