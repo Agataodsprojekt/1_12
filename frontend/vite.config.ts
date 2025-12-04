@@ -20,6 +20,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ['openbim-components'],
+    include: ['xlsx'],
   },
   test: {
     globals: true,

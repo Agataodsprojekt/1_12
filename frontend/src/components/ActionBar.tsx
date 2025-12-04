@@ -8,7 +8,7 @@ import {
   Moon,
   Camera,
   MessageCircle,
-  Share2,
+  FileSpreadsheet,
   Search,
   Layers,
   Eye,
@@ -28,7 +28,7 @@ export default function ActionBar({ onActionSelect }: ActionBarProps) {
 
   const handleActionClick = (action: string) => {
     // Przyciski jednorazowe (nie są trybami, tylko akcjami)
-    const oneTimeActions = ["undo", "redo", "camera", "share"];
+    const oneTimeActions = ["undo", "redo", "camera", "export"];
     
     if (oneTimeActions.includes(action)) {
       // Wykonaj akcję ale nie zmieniaj aktywnego trybu
@@ -124,10 +124,10 @@ export default function ActionBar({ onActionSelect }: ActionBarProps) {
       tooltip: "Manage 2D views (storeys, elevations, sections)",
     },
     {
-      id: "share",
-      label: "Share",
-      icon: Share2,
-      tooltip: "Share the model with others",
+      id: "export",
+      label: "Documentation Export",
+      icon: FileSpreadsheet,
+      tooltip: "Export documentation to Excel",
     },
   ];
 

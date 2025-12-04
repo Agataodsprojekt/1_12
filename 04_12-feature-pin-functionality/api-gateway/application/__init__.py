@@ -1,2 +1,0 @@
-# Application layer - API Gateway
-

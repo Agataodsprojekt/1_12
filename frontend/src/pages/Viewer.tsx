@@ -25,6 +25,8 @@ import { SimpleVolumeTool } from "../utils/SimpleVolumeTool";
 import { SimpleHider } from "../utils/SimpleHider";
 import { enableViewsFeature, ViewsManager } from "../utils/views";
 import { getFragmentsManager, getHider, setLoadedModels, getLoadedModels } from "../lib/thatopen";
+import { ExportDialog } from "../components/ExportDialog";
+import { exportElementsToExcel } from "../utils/excelExport";
 import { api } from "../lib/api";
 
 const Viewer = () => {
@@ -92,6 +94,7 @@ const Viewer = () => {
   // Stan dla selekcji i izolacji
   const [showSelectionPanel, setShowSelectionPanel] = useState(false);
   const [selectedElements, setSelectedElements] = useState<SelectedElement[]>([]);
+  const selectedElementsRef = useRef<SelectedElement[]>([]); // Ref dla aktualnego stanu selekcji (używany w closure)
   const [isIsolated, setIsIsolated] = useState(false);
   
   // Stan dla Visibility Panel
@@ -111,6 +114,8 @@ const Viewer = () => {
   const scissorsPointsRef = useRef<THREE.Vector3[]>([]);
   const scissorsPreviewLineRef = useRef<THREE.Line | null>(null);
   const viewsManagerRef = useRef<ViewsManager | null>(null);
+  // Export dialog state
+  const [showExportDialog, setShowExportDialog] = useState(false);
   
   // API hooks for backend integration
   const viewsAPI = useViewsAPI();
@@ -154,6 +159,11 @@ const Viewer = () => {
   useEffect(() => {
     showSelectionPanelRef.current = showSelectionPanel;
   }, [showSelectionPanel]);
+  
+  // Synchronizuj ref z selectedElements (używany w closure)
+  useEffect(() => {
+    selectedElementsRef.current = selectedElements;
+  }, [selectedElements]);
   
   // Synchronizuj opcje wymiarowania z narzędziem
   useEffect(() => {
@@ -1388,30 +1398,73 @@ const Viewer = () => {
 
       // reagowanie na zaznaczenia
       highlighter.events.select.onHighlight.add(async (selection: any) => {
-        const fragmentID = Object.keys(selection)[0];
-        const expressID = Number([...selection[fragmentID]][0]);
+        // Pobierz wszystkie expressID z selection (może być wiele elementów)
+        const allExpressIDs: number[] = [];
+        for (const fragmentID of Object.keys(selection)) {
+          const ids = selection[fragmentID];
+          if (ids instanceof Set) {
+            allExpressIDs.push(...Array.from(ids).map(id => Number(id)));
+          } else if (Array.isArray(ids)) {
+            allExpressIDs.push(...ids.map(id => Number(id)));
+          }
+        }
+        
+        // Jeśli Ctrl jest wciśnięty i panel selekcji jest otwarty, znajdź NOWY element
+        // (ten, który nie jest jeszcze w selectedElements)
+        let expressID: number | null = null;
+        if (isCtrlPressedRef.current && showSelectionPanelRef.current) {
+          // Znajdź element, który nie jest jeszcze w selekcji (użyj ref dla aktualnego stanu)
+          const currentSelection = selectedElementsRef.current;
+          console.log(`🔍 Looking for new element. Current selection:`, currentSelection.map(el => el.expressID), `All IDs in selection:`, allExpressIDs);
+          for (const id of allExpressIDs) {
+            if (!currentSelection.some((el: SelectedElement) => el.expressID === id)) {
+              expressID = id;
+              console.log(`✅ Found new element: ${id}`);
+              break; // Użyj pierwszego nowego elementu
+            }
+          }
+          // Jeśli wszystkie elementy są już w selekcji, użyj pierwszego
+          if (expressID === null && allExpressIDs.length > 0) {
+            expressID = allExpressIDs[0];
+            console.log(`⚠️ All elements already in selection, using first: ${expressID}`);
+          }
+        } else {
+          // Normalny klik - użyj pierwszego elementu
+          expressID = allExpressIDs.length > 0 ? allExpressIDs[0] : null;
+        }
+        
+        if (expressID === null) {
+          console.warn("⚠️ No expressID found in selection");
+          return;
+        }
+        
         const elementIdStr = expressID.toString();
         
         // Sprawdź, czy kliknięty element jest już podświetlony
         // Jeśli tak, odznacz go
-        if (selectedElementId === elementIdStr) {
+        if (selectedElementId === elementIdStr && !isCtrlPressedRef.current) {
           console.log("🔄 Clicked on already selected element - deselecting");
           highlighter.clear();
           setSelectedElementId(undefined);
           setSelectedElementName(undefined);
           // Wyczyść panel Properties
-          const propertiesPanel = viewer.ui.projects.active?.uiElements.get("Properties");
-          if (propertiesPanel) {
-            propertiesPanel.visible = false;
+          try {
+            const propertiesPanel = viewer.ui?.projects?.active?.uiElements?.get("Properties");
+            if (propertiesPanel) {
+              propertiesPanel.visible = false;
+            }
+          } catch (error) {
+            // Ignoruj błąd
           }
           return;
         }
         
         // Jeśli Ctrl jest wciśnięty i panel selekcji jest otwarty, dodaj do selekcji
+        // i JEDNOCZEŚNIE pokaż properties dla aktualnie klikniętego elementu.
         if (isCtrlPressedRef.current && showSelectionPanelRef.current) {
-          console.log("🎯 Ctrl+click - adding element to selection:", expressID);
+          console.log("🎯 Ctrl+click - adding element to selection and showing its properties:", expressID);
           addToSelection(expressID);
-          return; // Nie wykonuj innych akcji
+          // nie wychodzimy z funkcji – poniższy kod zaktualizuje panel Properties
         }
         
         // Jeśli tryb pinowania jest aktywny, zapinuj element
@@ -2019,7 +2072,79 @@ const Viewer = () => {
           */
         
         // Normalny tryb - zawsze pokaż properties
-        propertiesProcessor.renderProperties(model, expressID);
+        // Znajdź właściwy model dla tego expressID (nie używaj model z closure!)
+        let elementModel = null;
+        for (const m of loadedModelsRef.current) {
+          try {
+            // Sprawdź czy ten model zawiera ten expressID
+            for (const item of (m.items || [])) {
+              const ids = (item as any).ids;
+              if (!ids) continue;
+              
+              const idArray: number[] = Array.isArray(ids)
+                ? ids
+                : ids instanceof Set || ids instanceof Map
+                ? Array.from(ids as Set<number> | Map<number, unknown>).map((v: any) =>
+                    typeof v === "number" ? v : Array.isArray(v) ? v[0] : Number(v)
+                  )
+                : typeof ids === "object"
+                ? Object.keys(ids).map((k) => Number(k))
+                : [];
+              
+              if (idArray.includes(expressID)) {
+                elementModel = m;
+                break;
+              }
+            }
+            if (elementModel) break;
+          } catch (error) {
+            // Próbuj następny model
+          }
+        }
+        
+        // Jeśli nie znaleziono modelu, użyj pierwszego dostępnego
+        if (!elementModel && loadedModelsRef.current.length > 0) {
+          elementModel = loadedModelsRef.current[0];
+        }
+        
+        if (elementModel) {
+          // Wyczyść panel Properties przed renderowaniem nowych właściwości
+          // (to wymusza aktualizację nawet jeśli element jest już wybrany)
+          try {
+            // Sprawdź czy viewer.ui.projects istnieje
+            const propertiesPanel = viewer.ui?.projects?.active?.uiElements?.get("Properties");
+            if (propertiesPanel) {
+              // Wyczyść zawartość panelu przed renderowaniem
+              try {
+                // Spróbuj wyczyścić panel przez ustawienie widoczności
+                propertiesPanel.visible = false;
+                // Krótkie opóźnienie aby panel się zamknął, potem otwórz i renderuj
+                setTimeout(() => {
+                  propertiesPanel.visible = true;
+                  // Wymuś renderowanie właściwości dla nowego elementu
+                  propertiesProcessor.renderProperties(elementModel, expressID);
+                  console.log(`📋 Rendering properties for expressID ${expressID} from model ${elementModel.modelId || 'unknown'}`);
+                }, 10);
+              } catch (error) {
+                // Jeśli coś pójdzie nie tak, po prostu renderuj
+                console.warn('⚠️ Error updating properties panel, rendering anyway:', error);
+                propertiesProcessor.renderProperties(elementModel, expressID);
+                console.log(`📋 Rendering properties for expressID ${expressID} from model ${elementModel.modelId || 'unknown'}`);
+              }
+            } else {
+              // Jeśli panel nie istnieje, po prostu renderuj
+              propertiesProcessor.renderProperties(elementModel, expressID);
+              console.log(`📋 Rendering properties for expressID ${expressID} from model ${elementModel.modelId || 'unknown'}`);
+            }
+          } catch (error) {
+            // Jeśli viewer.ui.projects nie istnieje, po prostu renderuj
+            console.warn('⚠️ Properties panel not available, rendering anyway:', error);
+            propertiesProcessor.renderProperties(elementModel, expressID);
+            console.log(`📋 Rendering properties for expressID ${expressID} from model ${elementModel.modelId || 'unknown'}`);
+          }
+        } else {
+          console.warn(`⚠️ No model found for expressID ${expressID}`);
+        }
         
         // Jeśli tryb volume measurement jest aktywny, oblicz objętość
         if (isVolumeModeRef.current && volumeMeasurerRef.current) {
@@ -2038,12 +2163,17 @@ const Viewer = () => {
         // Zapisz ID zaznaczonego elementu dla komentarzy
         setSelectedElementId(elementIdStr);
         
-        // Spróbuj pobrać nazwę elementu
-        try {
-          const properties = await model.getProperties(expressID);
-          const name = properties?.Name?.value || properties?.type || `Element ${expressID}`;
-          setSelectedElementName(name);
-        } catch (error) {
+        // Spróbuj pobrać nazwę elementu z właściwego modelu
+        if (elementModel) {
+          try {
+            const properties = await elementModel.getProperties(expressID);
+            const name = properties?.Name?.value || properties?.type || `Element ${expressID}`;
+            setSelectedElementName(name);
+            console.log(`📝 Element name: ${name} (expressID: ${expressID})`);
+          } catch (error) {
+            setSelectedElementName(`Element ${expressID}`);
+          }
+        } else {
           setSelectedElementName(`Element ${expressID}`);
         }
 
@@ -2394,6 +2524,68 @@ const Viewer = () => {
     }
   };
 
+  // Funkcja do liczenia elementów z loadedModels (fallback gdy brak danych z backendu)
+  const countElementsFromModels = (): number => {
+    let count = 0;
+    const loadedModels = getLoadedModels();
+    for (const model of loadedModels) {
+      for (const item of (model.items || [])) {
+        const ids = (item as any).ids;
+        if (!ids) continue;
+
+        if (Array.isArray(ids)) {
+          count += ids.length;
+        } else if (ids instanceof Set || ids instanceof Map) {
+          count += ids.size;
+        } else if (typeof ids === "object") {
+          count += Object.keys(ids).length;
+        }
+      }
+    }
+    return count;
+  };
+
+  // Obsługa eksportu dokumentacji do Excela
+  const handleExport = async (exportAll: boolean) => {
+    try {
+      const loadedModels = getLoadedModels();
+
+      if (loadedModels.length === 0) {
+        alert("Brak załadowanych modeli IFC.");
+        return;
+      }
+
+      const totalElementsCount =
+        elements.length > 0 ? elements.length : countElementsFromModels();
+
+      if (exportAll && totalElementsCount === 0) {
+        alert("Brak elementów do eksportu.");
+        return;
+      }
+
+      if (!exportAll && selectedElements.length === 0) {
+        alert("Brak zaznaczonych elementów do eksportu.");
+        return;
+      }
+
+      console.log(
+        `📊 Starting export: ${exportAll ? "all" : "selected"} elements`
+      );
+
+      await exportElementsToExcel(
+        elements,
+        loadedModels,
+        selectedElements,
+        costs || undefined,
+        exportAll,
+        getAllComments()
+      );
+    } catch (error) {
+      console.error("❌ Error in handleExport:", error);
+      alert("Błąd podczas eksportu: " + (error as Error).message);
+    }
+  };
+
   // Funkcja wyszukiwania elementów
   const searchElements = async (query: string) => {
     const results: Array<{
@@ -2541,6 +2733,7 @@ const Viewer = () => {
     return results;
   };
 
+
   // Funkcja obsługi wyboru elementu z wyników wyszukiwania
   const handleSearchSelect = async (expressID: number) => {
     if (!highlighterRef.current || loadedModelsRef.current.length === 0) return;
@@ -2687,12 +2880,6 @@ const Viewer = () => {
 
   // Funkcje zarządzania selekcją
   const addToSelection = async (expressID: number) => {
-    // Sprawdź czy element już jest w selekcji
-    if (selectedElements.some((el: SelectedElement) => el.expressID === expressID)) {
-      console.log('Element already in selection:', expressID);
-      return;
-    }
-
     // Pobierz informacje o elemencie
     let elementInfo: SelectedElement | null = null;
     
@@ -2713,21 +2900,41 @@ const Viewer = () => {
     }
 
     if (elementInfo) {
-      setSelectedElements((prev: SelectedElement[]) => [...prev, elementInfo!]);
-      console.log('✅ Added to selection:', elementInfo);
-      
-      // Save selection to backend API
-      try {
-        const elementIds = [...selectedElements, elementInfo].map((el) => el.expressID.toString());
-        await selectionsAPI.createSelection(
-          `Selection ${new Date().toLocaleString()}`,
-          elementIds,
-          { created_at: new Date().toISOString() }
-        );
-        console.log('✅ Selection saved to backend');
-      } catch (error) {
-        console.warn('⚠️ Failed to save selection to backend:', error);
-      }
+      // Użyj funkcji aktualizującej stan, aby uniknąć race condition
+      // To zapewnia, że sprawdzamy najnowszy stan, nawet jeśli funkcja jest wywoływana szybko
+      setSelectedElements((prev: SelectedElement[]) => {
+        console.log(`🔍 Checking selection for expressID ${expressID}, current selection size: ${prev.length}`);
+        console.log(`🔍 Current selection IDs:`, prev.map(el => el.expressID));
+        
+        // Sprawdź czy element już jest w selekcji (używając aktualnego stanu)
+        if (prev.some((el: SelectedElement) => el.expressID === expressID)) {
+          console.log(`⚠️ Element ${expressID} already in selection, skipping`);
+          return prev; // Nie zmieniaj stanu
+        }
+        
+        console.log(`✅ Adding element to selection:`, elementInfo);
+        const newSelection = [...prev, elementInfo!];
+        console.log(`✅ New selection size: ${newSelection.length}, IDs:`, newSelection.map(el => el.expressID));
+        
+        // Save selection to backend API (użyj setTimeout aby nie blokować aktualizacji UI)
+        setTimeout(async () => {
+          try {
+            const elementIds = newSelection.map((el) => el.expressID.toString());
+            await selectionsAPI.createSelection(
+              `Selection ${new Date().toLocaleString()}`,
+              elementIds,
+              { created_at: new Date().toISOString() }
+            );
+            console.log('✅ Selection saved to backend');
+          } catch (error) {
+            console.warn('⚠️ Failed to save selection to backend:', error);
+          }
+        }, 100);
+        
+        return newSelection;
+      });
+    } else {
+      console.warn(`⚠️ Could not get element info for expressID ${expressID}`);
     }
   };
 
@@ -2883,6 +3090,19 @@ const Viewer = () => {
     setActiveAction(action);
     console.log("Selected action:", action);
     
+    // Obsługa Export (eksport dokumentacji)
+    if (action === "export") {
+      setShowExportDialog(true);
+      console.log("📊 Export dialog enabled");
+      return;
+    }
+    
+    // Wyłącz dialog eksportu gdy wybrana jest inna akcja
+    if (showExportDialog && action !== "export") {
+      setShowExportDialog(false);
+      console.log("📊 Export dialog disabled");
+    }
+    
     // Obsługa przycisku Comment
     if (action === "comment") {
       setShowCommentPanel(true);
@@ -3027,28 +3247,43 @@ const Viewer = () => {
   };
   
   const handleScreenshot = () => {
-    if (!viewerRef.current || !viewerContainerRef.current) {
+    if (!viewerRef.current) {
       console.warn('⚠️ Cannot capture screenshot: viewer not ready');
       return;
     }
     
     try {
-      const canvas = viewerContainerRef.current.querySelector('canvas');
-      if (!canvas) {
-        console.warn('⚠️ Cannot capture screenshot: canvas not found');
+      // Pobierz renderer z OpenBIM Components
+      const rendererComponent = viewerRef.current.renderer;
+      if (!rendererComponent) {
+        console.warn('⚠️ Cannot capture screenshot: renderer not found');
         return;
       }
       
-      // Convert canvas to data URL
-      const dataURL = canvas.toDataURL('image/png');
+      const renderer = rendererComponent.get() as THREE.WebGLRenderer;
+      if (!renderer || !renderer.domElement) {
+        console.warn('⚠️ Cannot capture screenshot: WebGL renderer not available');
+        return;
+      }
       
-      // Create download link
+      // Upewnij się, że scena jest zrenderowana
+      const scene = viewerRef.current.scene?.get();
+      const camera = viewerRef.current.camera?.get();
+      
+      if (scene && camera) {
+        renderer.render(scene, camera);
+      }
+      
+      // Przechwyć obraz z canvas renderera
+      const dataURL = renderer.domElement.toDataURL('image/png');
+      
+      // Utwórz link do pobrania
       const link = document.createElement('a');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       link.download = `screenshot-${timestamp}.png`;
       link.href = dataURL;
       
-      // Trigger download
+      // Pobierz plik
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -3056,6 +3291,7 @@ const Viewer = () => {
       console.log('📸 Screenshot captured and downloaded');
     } catch (error) {
       console.error('❌ Error capturing screenshot:', error);
+      alert('Błąd podczas przechwytywania zrzutu ekranu: ' + (error as Error).message);
     }
   };
 
@@ -3673,7 +3909,6 @@ const Viewer = () => {
     }
   };
 
-
   return (
     <div style={{ width: '100%', height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       {/* Header z nazwą aplikacji */}
@@ -4026,6 +4261,16 @@ const Viewer = () => {
           isScissorsMode={isScissorsMode}
         />
       )}
+
+      {/* Dialog eksportu dokumentacji */}
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+        onExport={handleExport}
+        totalElements={elements.length > 0 ? elements.length : countElementsFromModels()}
+        selectedElementsCount={selectedElements.length}
+        hasCosts={!!costs}
+      />
 
       </div>
     </div>
