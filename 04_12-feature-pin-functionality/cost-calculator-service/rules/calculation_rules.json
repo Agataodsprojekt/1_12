@@ -1,0 +1,14 @@
+{
+  "enabled_providers": [
+    "material",
+    "connection"
+  ],
+  "priority_order": [
+    "material",
+    "connection",
+    "labor",
+    "surface_treatment"
+  ],
+  "note": "Dodaj więcej provider-ów w miarę implementacji"
+}
+
