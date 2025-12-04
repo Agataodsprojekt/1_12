@@ -15,11 +15,17 @@ import { ElementsList } from "../components/ElementsList";
 import { useTheme } from "../contexts/ThemeContext";
 import { useComments, Comment } from "../hooks/useComments";
 import { useIFCData } from "../hooks/useIFCData";
+import { usePins } from "../hooks/usePins";
+import { useProject } from "../hooks/useProject";
+import { useViewsAPI } from "../hooks/useViewsAPI";
+import { useSelectionsAPI } from "../hooks/useSelectionsAPI";
+import { useMeasurementsAPI } from "../hooks/useMeasurementsAPI";
 import { SimpleDimensionTool } from "../utils/SimpleDimensionTool";
 import { SimpleVolumeTool } from "../utils/SimpleVolumeTool";
 import { SimpleHider } from "../utils/SimpleHider";
 import { enableViewsFeature, ViewsManager } from "../utils/views";
 import { getFragmentsManager, getHider, setLoadedModels, getLoadedModels } from "../lib/thatopen";
+import { api } from "../lib/api";
 
 const Viewer = () => {
   const viewerContainerRef = useRef<HTMLDivElement>(null);
@@ -52,15 +58,21 @@ const Viewer = () => {
   const modelObjectsRef = useRef<THREE.Object3D[]>([]);
   const ifcLoaderRef = useRef<OBC.FragmentIfcLoader | null>(null);
   
-  // Stan dla pinowania elementów
-  const [isPinMode, setIsPinMode] = useState(false);
-  const [selectedPinColor, setSelectedPinColor] = useState("#000000"); // Domyślnie czarny
-  const [pinnedElements, setPinnedElements] = useState<Map<string, string>>(new Map());
-  const isPinModeRef = useRef(isPinMode);
+  // Pins - using hook with backend integration
+  const {
+    isPinMode,
+    setIsPinMode,
+    selectedPinColor,
+    setSelectedPinColor,
+    pinnedElements,
+    pinColors,
+    handlePinElement,
+    isPinModeRef,
+  } = usePins();
+  
+  // Keep refs for backward compatibility with existing code
   const selectedPinColorRef = useRef(selectedPinColor);
   const pinnedElementsRef = useRef<Map<string, string>>(new Map());
-  // Przechowuj oryginalne kolory elementów przed pinowaniem
-  const originalColorsRef = useRef<Map<string, { fragmentId: string; instanceIndex: number; color: { r: number; g: number; b: number } }>>(new Map());
   
   // Stan dla wymiarowania
   const [isDimensionMode, setIsDimensionMode] = useState(false);
@@ -100,6 +112,11 @@ const Viewer = () => {
   const scissorsPreviewLineRef = useRef<THREE.Line | null>(null);
   const viewsManagerRef = useRef<ViewsManager | null>(null);
   
+  // API hooks for backend integration
+  const viewsAPI = useViewsAPI();
+  const selectionsAPI = useSelectionsAPI();
+  const measurementsAPI = useMeasurementsAPI();
+  
   // Synchronizuj ref z state
   useEffect(() => {
     isAddSectionModeRef.current = isAddSectionMode;
@@ -121,10 +138,7 @@ const Viewer = () => {
   }, [isScissorsMode]);
   
   
-  useEffect(() => {
-    isPinModeRef.current = isPinMode;
-  }, [isPinMode]);
-  
+  // Sync refs with state (for backward compatibility)
   useEffect(() => {
     selectedPinColorRef.current = selectedPinColor;
   }, [selectedPinColor]);
@@ -177,11 +191,7 @@ const Viewer = () => {
     return () => clearInterval(animationInterval);
   }, [isDimensionMode]);
   
-  // Dostępne kolory do pinowania - tylko czarny i biały dla lepszej widoczności
-  const pinColors = [
-    { name: "Czarny", color: "#000000" },
-    { name: "Biały", color: "#FFFFFF" },
-  ];
+  // pinColors comes from usePins hook
   
   // Ref aby zawsze mieć dostęp do najnowszych komentarzy
   const commentsRef = useRef(comments);
@@ -311,7 +321,15 @@ const Viewer = () => {
     // --- VIEWS MANAGER ---
     const viewsManager = enableViewsFeature(viewer, scene, cameraComponent.get(), raycasterComponent);
     viewsManagerRef.current = viewsManager;
-    console.log('✅ ViewsManager initialized');
+    
+    // Integrate ViewsManager with API
+    viewsManager.setAPIIntegration({
+      createView: viewsAPI.createView,
+      updateView: viewsAPI.updateView,
+      deleteView: viewsAPI.deleteView,
+    });
+    
+    console.log('✅ ViewsManager initialized with API integration');
     
     // Ensure renderer has local clipping enabled
     try {
@@ -483,8 +501,8 @@ const Viewer = () => {
     const dimensions = new SimpleDimensionTool(scene, cameraComponent.get());
     dimensionsRef.current = dimensions;
     
-    // Callback wywoływany gdy wymiar jest tworzony (dla undo/redo)
-    dimensions.onMeasurementCreated = (dimensionData) => {
+    // Callback wywoływany gdy wymiar jest tworzony (dla undo/redo i API)
+    dimensions.onMeasurementCreated = async (dimensionData) => {
       const action: Action = {
         type: 'dimension_add',
         data: dimensionData,
@@ -492,6 +510,14 @@ const Viewer = () => {
       };
       saveAction(action);
       console.log('📏 Dimension saved to history');
+      
+      // Save to backend API
+      try {
+        await measurementsAPI.calculateDimension(dimensionData.start, dimensionData.end);
+        console.log('✅ Dimension saved to backend');
+      } catch (error) {
+        console.warn('⚠️ Failed to save dimension to backend:', error);
+      }
     };
     
     // Event listener dla ruchu myszy w trybie wymiarowania (podgląd)
@@ -876,9 +902,10 @@ const Viewer = () => {
     
     // Obsługa kliknięć: Shift + klik = dodaj punkt, Shift + podwójny klik = zaznacz do usunięcia
     const handleDimensionClickWithDelete = (event: MouseEvent) => {
-      // Check volume mode first
-      if (isVolumeModeRef.current && volumeMeasurerRef.current) {
-        volumeMeasurerRef.current.handleClick(event, modelObjectsRef.current);
+      // Volume mode doesn't use click handler - it calculates volume from selected elements
+      // Volume is calculated automatically when elements are selected via highlighter
+      if (isVolumeModeRef.current) {
+        // Volume measurement works through element selection, not clicks
         return;
       }
       
@@ -1390,13 +1417,17 @@ const Viewer = () => {
         // Jeśli tryb pinowania jest aktywny, zapinuj element
         if (isPinModeRef.current) {
           console.log("📌 Pin mode active - pinning element:", elementIdStr);
-          console.log("📌 Selection contains:", Object.keys(selection).length, "fragment(s)");
-          for (const fragID of Object.keys(selection)) {
-            const ids = selection[fragID];
-            console.log(`📌 Fragment ${fragID} contains ${ids.size || ids.length} element(s):`, Array.from(ids || []));
-          }
           
-          try {
+          // Use hook's handlePinElement which integrates with backend API
+          await handlePinElement(selection, highlighter, viewer, elementIdStr);
+          
+          return; // Nie pokazuj properties w trybie pinowania
+        }
+        
+        // OLD PIN LOGIC - REMOVED (now using usePins hook)
+        // Keeping this comment for reference - removed to fix syntax error
+        /*
+        try {
             // Określ styl na podstawie wybranego koloru
             // Normalizuj kolor do porównania (usuwając spacje i zmieniając na uppercase)
             const normalizedColor = selectedPinColorRef.current.trim().toUpperCase();
@@ -1985,9 +2016,7 @@ const Viewer = () => {
           } catch (error) {
             console.error("❌ Error pinning element:", error);
           }
-          
-          return; // Nie pokazuj properties w trybie pinowania
-        }
+          */
         
         // Normalny tryb - zawsze pokaż properties
         propertiesProcessor.renderProperties(model, expressID);
@@ -2374,6 +2403,62 @@ const Viewer = () => {
       properties: Record<string, any>;
     }> = [];
 
+    // Try API search first
+    try {
+      // Convert elements to API format
+      const elementsForAPI: any[] = [];
+      for (const model of loadedModelsRef.current) {
+        try {
+          const allIDs = await model.getAllPropertiesOfType(0);
+          if (allIDs && Object.keys(allIDs).length > 0) {
+            for (const id of Object.keys(allIDs)) {
+              try {
+                const props = await model.getProperties(Number(id));
+                if (props) {
+                  elementsForAPI.push({
+                    global_id: props.GlobalId?.value || id,
+                    type_name: props.type || 'Unknown',
+                    name: props.Name?.value || `Element ${id}`,
+                    properties: props,
+                  });
+                }
+              } catch (e) {
+                // Skip individual errors
+              }
+            }
+          }
+        } catch (e) {
+          // Skip model errors
+        }
+      }
+
+      if (elementsForAPI.length > 0) {
+        const apiResults = await api.search.searchElements(query, elementsForAPI);
+        
+        // Convert API results to local format
+        for (const apiResult of apiResults) {
+          // Find matching element in loaded models
+          const expressID = parseInt(apiResult.global_id || '0');
+          if (expressID) {
+            results.push({
+              expressID,
+              name: apiResult.name || `Element ${expressID}`,
+              type: apiResult.type_name || 'Unknown',
+              properties: apiResult.properties || {},
+            });
+          }
+        }
+        
+        if (results.length > 0) {
+          console.log(`✅ Found ${results.length} results via API`);
+          return results;
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ API search failed, falling back to local search:', error);
+    }
+
+    // Fallback to local search
     const lowerQuery = query.toLowerCase();
 
     for (const model of loadedModelsRef.current) {
@@ -2630,6 +2715,19 @@ const Viewer = () => {
     if (elementInfo) {
       setSelectedElements((prev: SelectedElement[]) => [...prev, elementInfo!]);
       console.log('✅ Added to selection:', elementInfo);
+      
+      // Save selection to backend API
+      try {
+        const elementIds = [...selectedElements, elementInfo].map((el) => el.expressID.toString());
+        await selectionsAPI.createSelection(
+          `Selection ${new Date().toLocaleString()}`,
+          elementIds,
+          { created_at: new Date().toISOString() }
+        );
+        console.log('✅ Selection saved to backend');
+      } catch (error) {
+        console.warn('⚠️ Failed to save selection to backend:', error);
+      }
     }
   };
 
@@ -2645,6 +2743,20 @@ const Viewer = () => {
 
   const isolateElements = async () => {
     if (!viewerRef.current || selectedElements.length === 0) return;
+    
+    // Save isolation to backend API
+    try {
+      const elementIds = selectedElements.map((el) => el.expressID.toString());
+      const selection = await selectionsAPI.createSelection(
+        `Isolated Selection ${new Date().toLocaleString()}`,
+        elementIds,
+        { isolated: true, created_at: new Date().toISOString() }
+      );
+      await selectionsAPI.isolateSelection(selection.id);
+      console.log('✅ Isolation saved to backend');
+    } catch (error) {
+      console.warn('⚠️ Failed to save isolation to backend:', error);
+    }
 
     // Jeśli Hider jest dostępny, użyj go
     if (hiderRef.current) {
@@ -2907,8 +3019,44 @@ const Viewer = () => {
     }
     
     
-    // TODO: Implement other action handlers
-    // - camera: capture screenshots
+    // Screenshot functionality
+    if (action === "camera") {
+      handleScreenshot();
+      return;
+    }
+  };
+  
+  const handleScreenshot = () => {
+    if (!viewerRef.current || !viewerContainerRef.current) {
+      console.warn('⚠️ Cannot capture screenshot: viewer not ready');
+      return;
+    }
+    
+    try {
+      const canvas = viewerContainerRef.current.querySelector('canvas');
+      if (!canvas) {
+        console.warn('⚠️ Cannot capture screenshot: canvas not found');
+        return;
+      }
+      
+      // Convert canvas to data URL
+      const dataURL = canvas.toDataURL('image/png');
+      
+      // Create download link
+      const link = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      link.download = `screenshot-${timestamp}.png`;
+      link.href = dataURL;
+      
+      // Trigger download
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      console.log('📸 Screenshot captured and downloaded');
+    } catch (error) {
+      console.error('❌ Error capturing screenshot:', error);
+    }
   };
 
   const handleAddComment = (text: string, elementId?: string, elementName?: string) => {

@@ -22,4 +22,32 @@ class ICalculationService(ABC):
     ) -> Result[Dict[str, Any], str]:
         """Perform strength analysis calculation"""
         pass
+    
+    # Measurements
+    @abstractmethod
+    async def calculate_dimension(
+        self,
+        point1: Dict[str, float],
+        point2: Dict[str, float],
+        project_id: str
+    ) -> Result[Dict[str, Any], str]:
+        """Calculate dimension between two points"""
+        pass
+    
+    @abstractmethod
+    async def calculate_volume(
+        self,
+        points: List[Dict[str, float]],
+        project_id: str
+    ) -> Result[Dict[str, Any], str]:
+        """Calculate volume from points"""
+        pass
+    
+    @abstractmethod
+    async def get_measurements(
+        self,
+        project_id: str
+    ) -> Result[List[Dict[str, Any]], str]:
+        """Get all measurements for a project"""
+        pass
 

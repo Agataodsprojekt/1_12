@@ -1,5 +1,5 @@
 """Gateway router - routes requests to microservices"""
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 from application.container import Container
@@ -304,4 +304,212 @@ async def aggregate_requests(
         raise HTTPException(status_code=500, detail=result.error)
     
     return result.value
+
+
+# ========== Automatic Proxy for New Endpoints ==========
+# Proxy all requests to microservices based on path prefix
+
+@router.api_route("/visualization/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_visualization(
+    path: str,
+    request: Request,
+    container: Container = Depends(get_container)
+):
+    """Proxy requests to 3D Data Service"""
+    import httpx
+    import json
+    settings = container.settings()
+    
+    method = request.method
+    params = dict(request.query_params)
+    
+    # Get body for POST/PUT/PATCH
+    body = None
+    if method in ["POST", "PUT", "PATCH"]:
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                body = json.loads(body_bytes)
+        except:
+            body = None
+    
+    url = f"{settings.data_3d_url}/api/visualization/{path}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            elif method == "POST":
+                response = await client.post(url, json=body, params=params)
+            elif method == "PUT":
+                response = await client.put(url, json=body, params=params)
+            elif method == "DELETE":
+                response = await client.delete(url, params=params)
+            elif method == "PATCH":
+                response = await client.patch(url, json=body, params=params)
+            else:
+                raise HTTPException(status_code=405, detail=f"Method {method} not allowed")
+            
+            # For DELETE, 404 is acceptable (idempotent delete)
+            if method == "DELETE" and response.status_code == 404:
+                return {"success": True, "message": "View not found (already deleted or never existed)"}
+            
+            response.raise_for_status()
+            
+            # Handle empty response for DELETE
+            if method == "DELETE" and response.status_code == 200:
+                try:
+                    return response.json()
+                except:
+                    return {"success": True}
+            
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        # For DELETE, 404 is acceptable
+        if method == "DELETE" and e.response.status_code == 404:
+            return {"success": True, "message": "View not found (already deleted or never existed)"}
+        raise HTTPException(status_code=e.response.status_code, detail=f"Error proxying to 3D Data Service: {str(e)}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Error proxying to 3D Data Service: {str(e)}")
+
+
+@router.api_route("/projects/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_projects(
+    path: str,
+    request: Request,
+    container: Container = Depends(get_container)
+):
+    """Proxy requests to Database Manager Service"""
+    import httpx
+    import json
+    settings = container.settings()
+    
+    method = request.method
+    params = dict(request.query_params)
+    
+    # Get body for POST/PUT/PATCH
+    body = None
+    if method in ["POST", "PUT", "PATCH"]:
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                body = json.loads(body_bytes)
+        except:
+            body = None
+    
+    url = f"{settings.db_manager_url}/api/projects/{path}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            elif method == "POST":
+                response = await client.post(url, json=body, params=params)
+            elif method == "PUT":
+                response = await client.put(url, json=body, params=params)
+            elif method == "DELETE":
+                response = await client.delete(url, params=params)
+            elif method == "PATCH":
+                response = await client.patch(url, json=body, params=params)
+            else:
+                raise HTTPException(status_code=405, detail=f"Method {method} not allowed")
+            
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Error proxying to Database Manager Service: {str(e)}")
+
+
+@router.api_route("/calculations/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_calculations(
+    path: str,
+    request: Request,
+    container: Container = Depends(get_container)
+):
+    """Proxy requests to Calculation Engine Service"""
+    import httpx
+    import json
+    settings = container.settings()
+    
+    method = request.method
+    params = dict(request.query_params)
+    
+    # Get body for POST/PUT/PATCH
+    body = None
+    if method in ["POST", "PUT", "PATCH"]:
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                body = json.loads(body_bytes)
+        except:
+            body = None
+    
+    url = f"{settings.calculation_engine_url}/api/calculations/{path}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            elif method == "POST":
+                response = await client.post(url, json=body, params=params)
+            elif method == "PUT":
+                response = await client.put(url, json=body, params=params)
+            elif method == "DELETE":
+                response = await client.delete(url, params=params)
+            elif method == "PATCH":
+                response = await client.patch(url, json=body, params=params)
+            else:
+                raise HTTPException(status_code=405, detail=f"Method {method} not allowed")
+            
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Error proxying to Calculation Engine Service: {str(e)}")
+
+
+@router.api_route("/ifc/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_ifc(
+    path: str,
+    request: Request,
+    container: Container = Depends(get_container)
+):
+    """Proxy requests to IFC Parser Service (for search/filter endpoints)"""
+    import httpx
+    import json
+    settings = container.settings()
+    
+    method = request.method
+    params = dict(request.query_params)
+    
+    # Get body for POST/PUT/PATCH
+    body = None
+    if method in ["POST", "PUT", "PATCH"]:
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                body = json.loads(body_bytes)
+        except:
+            body = None
+    
+    url = f"{settings.ifc_parser_url}/api/ifc/{path}"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == "GET":
+                response = await client.get(url, params=params)
+            elif method == "POST":
+                response = await client.post(url, json=body, params=params)
+            elif method == "PUT":
+                response = await client.put(url, json=body, params=params)
+            elif method == "DELETE":
+                response = await client.delete(url, params=params)
+            elif method == "PATCH":
+                response = await client.patch(url, json=body, params=params)
+            else:
+                raise HTTPException(status_code=405, detail=f"Method {method} not allowed")
+            
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Error proxying to IFC Parser Service: {str(e)}")
 

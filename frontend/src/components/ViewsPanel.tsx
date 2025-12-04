@@ -40,7 +40,9 @@ const SectionPlaneSlider: React.FC<SectionPlaneSliderProps> = ({ viewId, viewsMa
     }
     
     // Update plane position with relative offset (don't update camera)
-    viewsManager.updateSectionPlane(viewId, offset, false); // false = don't update camera
+    viewsManager.updateSectionPlane(viewId, offset, false).catch(err => {
+      console.warn('Failed to update section plane:', err);
+    }); // false = don't update camera
     onUpdate();
   };
 

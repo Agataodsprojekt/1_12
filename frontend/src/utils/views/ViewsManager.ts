@@ -25,6 +25,11 @@ export class ViewsManager {
   private cuttingService: SectionCuttingService;
   private helperService: SectionHelperService;
   private viewer: OBC.Components;
+  private apiIntegration: {
+    createView: (name: string, type: string, data: any) => Promise<any>;
+    updateView: (viewId: string, viewData: any) => Promise<any>;
+    deleteView: (viewId: string) => Promise<void>;
+  } | null = null;
 
   constructor(
     viewer: OBC.Components,
@@ -39,6 +44,17 @@ export class ViewsManager {
     this.clippingService = new ClippingPlaneService(viewer, scene);
     this.cuttingService = new SectionCuttingService(this.clippingService);
     this.helperService = new SectionHelperService(scene);
+  }
+
+  /**
+   * Set API integration for backend sync
+   */
+  setAPIIntegration(api: {
+    createView: (name: string, type: string, data: any) => Promise<any>;
+    updateView: (viewId: string, viewData: any) => Promise<any>;
+    deleteView: (viewId: string) => Promise<void>;
+  }): void {
+    this.apiIntegration = api;
   }
 
   /**
@@ -62,6 +78,18 @@ export class ViewsManager {
     const view = await this.factory.createStoreyView(storeyName, elevation);
     if (view) {
       this.repository.save(view);
+      
+      // Sync with backend if API is available
+      if (this.apiIntegration) {
+        try {
+          await this.apiIntegration.createView(storeyName, 'storey', {
+            elevation,
+            storeyName,
+          });
+        } catch (error) {
+          console.warn('⚠️ Failed to sync storey view to backend:', error);
+        }
+      }
     }
     return view;
   }
@@ -95,6 +123,19 @@ export class ViewsManager {
         this.cuttingService.applySectionCut(view.id, view);
         this.helperService.createHelper(view.id, view, view.normal, view.point, view.range || 10);
       }
+      
+      // Sync with backend if API is available
+      if (this.apiIntegration) {
+        try {
+          await this.apiIntegration.createView(view.name || 'Section View', 'section', {
+            normal: { x: normal.x, y: normal.y, z: normal.z },
+            point: { x: point.x, y: point.y, z: point.z },
+            range: view.range || 10,
+          });
+        } catch (error) {
+          console.warn('⚠️ Failed to sync section view to backend:', error);
+        }
+      }
     }
     return view;
   }
@@ -116,6 +157,19 @@ export class ViewsManager {
       if (view.normal && view.point) {
         this.cuttingService.applySectionCut(view.id, view);
         this.helperService.createHelper(view.id, view, view.normal, view.point, view.range || 10);
+      }
+      
+      // Sync with backend if API is available
+      if (this.apiIntegration) {
+        try {
+          await this.apiIntegration.createView(view.name || 'Scissors Section', 'section', {
+            normal: view.normal ? { x: view.normal.x, y: view.normal.y, z: view.normal.z } : undefined,
+            point: view.point ? { x: view.point.x, y: view.point.y, z: view.point.z } : undefined,
+            range: view.range || 10,
+          });
+        } catch (error) {
+          console.warn('⚠️ Failed to sync scissors section view to backend:', error);
+        }
       }
     }
     return view;
@@ -227,6 +281,15 @@ export class ViewsManager {
         this.repository.setActiveViewId(null);
       }
 
+      // Sync with backend if API is available
+      if (deleted && this.apiIntegration) {
+        try {
+          await this.apiIntegration.deleteView(viewId);
+        } catch (error) {
+          console.warn('⚠️ Failed to delete view from backend:', error);
+        }
+      }
+
       return deleted;
     } catch (error) {
       console.error('❌ Error deleting view:', error);
@@ -251,7 +314,7 @@ export class ViewsManager {
   /**
    * Update section plane offset
    */
-  updateSectionPlane(viewId: string, offset: number, updateCamera: boolean = true): boolean {
+  async updateSectionPlane(viewId: string, offset: number, updateCamera: boolean = true): Promise<boolean> {
     const view = this.repository.getById(viewId);
     if (!view || view.type !== 'section' || !view.normal || !view.point) {
       return false;
@@ -269,6 +332,18 @@ export class ViewsManager {
 
     // Update view point
     view.point = newPoint;
+    
+    // Sync with backend if API is available (fire and forget)
+    if (this.apiIntegration) {
+      this.apiIntegration.updateView(viewId, {
+        point: { x: newPoint.x, y: newPoint.y, z: newPoint.z },
+      }).catch((error: any) => {
+        // Don't log 404 errors - view might not exist in backend yet (locally created)
+        if (error?.response?.status !== 404) {
+          console.warn('⚠️ Failed to update view in backend:', error);
+        }
+      });
+    }
 
     return true;
   }
@@ -301,6 +376,17 @@ export class ViewsManager {
     const view = await this.factory.createElevationView(direction, name);
     if (view) {
       this.repository.save(view);
+      
+      // Sync with backend if API is available
+      if (this.apiIntegration) {
+        try {
+          await this.apiIntegration.createView(view.name || `Elevation ${direction}`, 'elevation', {
+            direction,
+          });
+        } catch (error) {
+          console.warn('⚠️ Failed to sync elevation view to backend:', error);
+        }
+      }
     }
     return view;
   }

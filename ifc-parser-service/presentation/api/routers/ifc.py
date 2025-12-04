@@ -1,6 +1,7 @@
 """IFC parser router"""
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
-from typing import List
+from typing import List, Dict, Any
+from pydantic import BaseModel
 from application.container import Container
 from ifc_common import Result
 
@@ -16,6 +17,18 @@ def get_container() -> Container:
     return _container
 
 router = APIRouter(prefix="/api/ifc", tags=["IFC"])
+
+
+class SearchRequest(BaseModel):
+    """Request model for element search"""
+    query: str
+    elements: List[Dict[str, Any]] = []
+
+
+class FilterRequest(BaseModel):
+    """Request model for element filtering"""
+    filters: Dict[str, Any]
+    elements: List[Dict[str, Any]] = []
 
 
 @router.post("/parse")
@@ -81,6 +94,81 @@ async def get_elements():
         "elements": [],
         "message": "No elements parsed yet. Upload an IFC file first."
     }
+
+
+# Search and filter endpoints
+@router.post("/search")
+async def search_elements(
+    request: SearchRequest,
+    container: Container = Depends(get_container)
+):
+    """Search elements by query string"""
+    from domain.entities.ifc_element import IfcElement
+    
+    parser_service = container.ifc_parser_service()
+    
+    # Convert dicts to IfcElement objects
+    element_objects = []
+    for elem_dict in request.elements:
+        element = IfcElement(
+            global_id=elem_dict.get("global_id", ""),
+            type_name=elem_dict.get("type_name", ""),
+            name=elem_dict.get("name", ""),
+            properties=elem_dict.get("properties", {}),
+            placement_matrix=elem_dict.get("placement_matrix")
+        )
+        element_objects.append(element)
+    
+    result = await parser_service.search_elements(request.query, element_objects)
+    
+    if result.is_failure:
+        raise HTTPException(status_code=500, detail=result.error)
+    
+    return {"elements": result.value}
+
+
+@router.get("/elements/{element_id}")
+async def get_element(
+    element_id: str,
+    container: Container = Depends(get_container)
+):
+    """Get element details by ID"""
+    # Note: This endpoint requires elements to be provided via POST body
+    # For now, return a placeholder
+    return {
+        "message": "Use POST /api/ifc/search or /api/ifc/filter with element_id in query",
+        "element_id": element_id
+    }
+
+
+@router.post("/filter")
+async def filter_elements(
+    request: FilterRequest,
+    container: Container = Depends(get_container)
+):
+    """Filter elements by criteria"""
+    from domain.entities.ifc_element import IfcElement
+    
+    parser_service = container.ifc_parser_service()
+    
+    # Convert dicts to IfcElement objects
+    element_objects = []
+    for elem_dict in request.elements:
+        element = IfcElement(
+            global_id=elem_dict.get("global_id", ""),
+            type_name=elem_dict.get("type_name", ""),
+            name=elem_dict.get("name", ""),
+            properties=elem_dict.get("properties", {}),
+            placement_matrix=elem_dict.get("placement_matrix")
+        )
+        element_objects.append(element)
+    
+    result = await parser_service.filter_elements(request.filters, element_objects)
+    
+    if result.is_failure:
+        raise HTTPException(status_code=500, detail=result.error)
+    
+    return {"elements": result.value}
 
 
 @router.get("/health")
