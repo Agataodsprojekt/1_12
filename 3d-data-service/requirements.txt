@@ -1,0 +1,10 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+dependency-injector==4.41.0
+python-dotenv==1.0.0
+trimesh==4.0.5
+numpy==1.24.3
+# common-package is installed separately in Dockerfile
+

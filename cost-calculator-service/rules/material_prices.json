@@ -1,0 +1,33 @@
+{
+  "STEEL/S355": {
+    "unit": "kg",
+    "price_per_unit": 4.50,
+    "density_kg_m3": 7850,
+    "description": "Stal konstrukcyjna S355"
+  },
+  "STEEL/S235": {
+    "unit": "kg",
+    "price_per_unit": 4.20,
+    "density_kg_m3": 7850,
+    "description": "Stal konstrukcyjna S235"
+  },
+  "STEEL/S460": {
+    "unit": "kg",
+    "price_per_unit": 5.20,
+    "density_kg_m3": 7850,
+    "description": "Stal konstrukcyjna S460"
+  },
+  "CONCRETE/C30": {
+    "unit": "m³",
+    "price_per_unit": 450.00,
+    "density_kg_m3": 2400,
+    "description": "Beton C30/37"
+  },
+  "CONCRETE/C25": {
+    "unit": "m³",
+    "price_per_unit": 400.00,
+    "density_kg_m3": 2400,
+    "description": "Beton C25/30"
+  }
+}
+

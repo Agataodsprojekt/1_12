@@ -1,0 +1,16 @@
+{
+  "welding": {
+    "rate_per_hour": 80.00,
+    "rate_per_meter": 25.00,
+    "description": "Stawka za spawanie"
+  },
+  "cutting": {
+    "rate_per_hour": 60.00,
+    "description": "Stawka za cięcie"
+  },
+  "assembly": {
+    "rate_per_hour": 70.00,
+    "description": "Stawka za montaż"
+  }
+}
+
